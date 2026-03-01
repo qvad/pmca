@@ -1,0 +1,39 @@
+# Llama 3.1 8B Instruct (Meta, open weights, 4.9GB, ~119 tok/s local)
+models:
+  architect:
+    name: "llama3.1:8b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.3
+  coder:
+    name: "llama3.1:8b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.2
+  reviewer:
+    name: "llama3.1:8b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.1
+  watcher:
+    name: "llama3.1:8b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.1
+
+cascade:
+  max_depth: 2
+  max_retries: 5
+  max_children: 5
+  leaf_threshold: "function"
+  best_of_n: 3
+  fresh_start_after: 3
+  test_first: true
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
+
+lint:
+  mypy: true
+  ruff: true

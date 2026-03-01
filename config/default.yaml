@@ -1,0 +1,50 @@
+models:
+  architect:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 16384
+    temperature: 0.3
+  coder:
+    name: "qwen2.5-coder:7b-instruct-q4_K_M"
+    context_window: 16384
+    temperature: 0.2
+  reviewer:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 16384
+    temperature: 0.1
+  watcher:
+    name: "qwen2.5-coder:7b-instruct-q4_K_M"
+    context_window: 16384
+    temperature: 0.1
+  tester:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 16384
+    temperature: 0.2
+
+cascade:
+  max_depth: 4
+  max_retries: 3
+  max_children: 6
+  leaf_threshold: "method"
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: true
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
+
+# rag:
+#   enabled: false
+#   docs_path: "./docs"
+#   embedding_model: "all-MiniLM-L6-v2"
+#   n_results: 3
+#   persist_dir: "~/.pmca/rag"
+
+# mcp:
+#   enabled: false
+#   server_name: "pmca"
+
+# lint:
+#   mypy: false
+#   ruff: false

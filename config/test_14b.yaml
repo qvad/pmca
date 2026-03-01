@@ -1,0 +1,31 @@
+models:
+  architect:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 8192
+    temperature: 0.3
+  coder:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 8192
+    temperature: 0.2
+  reviewer:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 8192
+    temperature: 0.1
+  watcher:
+    name: "qwen2.5-coder:14b-instruct-q4_K_M"
+    context_window: 8192
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

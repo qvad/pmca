@@ -1,0 +1,41 @@
+# Mixed model config: deepseek for planning/review, qwen for code generation
+# Rationale: deepseek (16B MoE) has better reasoning for architecture and review,
+# qwen 7B is faster for code generation with best-of-N sampling.
+models:
+  architect:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.3
+  coder:
+    name: "qwen2.5-coder:7b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.2
+  reviewer:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.1
+  watcher:
+    name: "qwen2.5-coder:7b-instruct-q4_K_M"
+    context_window: 4096
+    temperature: 0.1
+
+cascade:
+  max_depth: 2
+  max_retries: 5
+  max_children: 5
+  leaf_threshold: "function"
+  best_of_n: 3
+  fresh_start_after: 3
+  test_first: true
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
+
+lint:
+  mypy: true
+  ruff: true

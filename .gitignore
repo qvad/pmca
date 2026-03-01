@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Logs
+*.log
+
+# Workspace (generated benchmark outputs)
+workspace/
+
+# Benchmark artifacts
+benchmark.log
+benchmark_results.json
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,38 @@
+models:
+  architect:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.3
+  coder:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.2
+  reviewer:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.1
+  watcher:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.1
+
+cascade:
+  max_depth: 2        # depth 0: root, 1: modules, 2: individual functions (forced leaf)
+  max_retries: 5      # 3 fix + 1 fresh start + 1 fix
+  max_children: 5
+  leaf_threshold: "function"
+  best_of_n: 3        # Generate 3 candidates, pick best
+  fresh_start_after: 3 # Regenerate from scratch after 3 failed fixes
+  test_first: true     # Generate tests before implementation
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
+
+lint:
+  mypy: true
+  ruff: true
