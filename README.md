@@ -161,54 +161,59 @@ Supported model providers: **Ollama** (default, local), **Groq**, **OpenAI**, **
 
 ## Benchmark Results
 
-All benchmarks use `qwen2.5-coder:7b-instruct-q4_K_M` on a single 16 GB GPU.
+12 tasks across 3 tiers (simple / medium / complex), single 16 GB GPU. Each task is validated by deterministic probes — external tests that check the generated code without relying on LLM-generated assertions.
 
-### Impact of Optimizations
+### Raw Model vs PMCA
 
-Baseline = bare cascade (architect → coder → reviewer), no deterministic repair.
-Optimized = full pipeline with all deterministic repair gates enabled.
-
-```
-                        Baseline (7B)          Optimized (7B)
-                        ─────────────          ──────────────
-Tasks passing           7 / 10                 8 / 10
-External probes         52 / 56  (93%)         56 / 56  (100%)
-Avg retries / task      ~1.5                   ~0.6
-Total time (10 tasks)   ~200 s                 144.5 s
-```
-
-Optimizations that drove the improvement:
-
-| Optimization | Effect |
-|---|---|
-| Attr/method shadowing auto-fix | linked_list: 4/6 → 6/6 probes |
-| Oracle repair (2nd-pass assertions) | bank_account: 4/5 → 5/5 probes |
-| Difficulty routing (skip planning for simple tasks) | Eliminated 7B "overthinking" regressions |
-| Test calibration (25% / power-of-10 threshold) | Reduced retry cycles on numeric assertions |
-| API consistency lint | Catches shadowing before tests run, saving full retry loops |
-
-### Full Results (12 tasks)
+"Raw" = single-shot prompt directly to the model, no agents or repair.
+"PMCA" = full cascade pipeline (architect → coder → deterministic repair → reviewer → watcher).
 
 ```
-Task             Tier      Result   Probes     LLM Calls  Time
-────────────────────────────────────────────────────────────────
-calculator       simple    PASS     6/6        7          84.4s
-stack            simple    PASS     6/6        7          33.6s
-counter          simple    PASS     4/4        6          23.7s
-fizzbuzz         simple    PASS     3/3        6          24.9s
-text_stats       medium    FAIL*    7/7        11         74.9s
-bank_account     medium    FAIL*    4/5        11         93.1s
-linked_list      medium    PASS     6/6        7          43.6s
-task_board       complex   PASS     6/6        9          55.5s
-matrix           complex   FAIL*    7/7        11         94.6s
-lru_cache        complex   PASS     6/6        7          40.7s
-data_pipeline    complex   FAIL*    10/10      7          237.5s
-todo_manager     complex   FAIL*    10/10      7          122.9s
-────────────────────────────────────────────────────────────────
-Total                      7/12     75/76      96         929.4s
+                     Raw 7B       Raw 14B      PMCA + 7B
+                     ──────       ───────      ─────────
+Probes passing       62/76        75/76        71/76
+Probe pass rate      82%          99%          93%
+LLM calls            12           12           98
+Total tokens         5,256        5,406        149,370
+Wall time            30.6s        59.8s        280.4s
 ```
 
-*\* Tasks marked FAIL exhaust retries on LLM-generated test assertions — 75 of 76 external probes still pass. The generated code is typically correct; the internal tests are wrong.*
+### Per-Task Breakdown
+
+```
+Task             Tier       Raw 7B   Raw 14B   PMCA+7B
+─────────────────────────────────────────────────────────
+calculator       simple      6/6      6/6       6/6
+stack            simple      6/6      6/6       6/6
+counter          simple      4/4      4/4       4/4
+fizzbuzz         simple      3/3      3/3       3/3
+text_stats       medium      7/7      7/7       6/7
+bank_account     medium      5/5      5/5       4/5
+linked_list      medium      4/6      6/6       6/6
+task_board       complex     6/6      6/6       6/6
+matrix           complex     7/7      7/7       7/7
+lru_cache        complex     0/6      6/6       6/6
+data_pipeline    complex     5/10     9/10      9/10
+todo_manager     complex     9/10    10/10      8/10
+─────────────────────────────────────────────────────────
+Total                       62/76    75/76     71/76
+```
+
+### What the Numbers Show
+
+**Raw 7B** fails on tasks that need correct imports (`lru_cache`: missing `OrderedDict`), attribute/method shadowing (`linked_list`: `self.size` vs `def size()`), and complex multi-step logic (`data_pipeline`). These are exactly the failure modes PMCA's deterministic repair chain targets.
+
+**PMCA + 7B** recovers `lru_cache` (0→6 probes) and `linked_list` (4→6) through auto-fix and import injection, but loses probes on `text_stats`, `bank_account`, and `todo_manager` due to the circular validation problem — the LLM generates both code and tests, and sometimes the test assertions are wrong, causing retry loops that degrade code that was originally correct.
+
+**Raw 14B** benefits from stronger reasoning and fewer mechanical errors (correct imports, no shadowing) but has no safety net — a single mistake means a failed probe with no retry. PMCA's value increases as task complexity grows and models get weaker.
+
+### Where PMCA Helps Most
+
+| Failure mode | Raw 7B | PMCA fix | Probes recovered |
+|---|---|---|---|
+| Missing imports (`OrderedDict`) | lru_cache: 0/6 | `KNOWN_IMPORTS` injection | +6 |
+| Attr/method shadowing (`self.size` vs `def size()`) | linked_list: 4/6 | `_fix_attr_method_shadowing` | +2 |
+| Complex pipeline logic | data_pipeline: 5/10 | Spec decomposition + repair chain | +4 |
 
 ## Installation
 
