@@ -492,150 +492,182 @@ class WatcherAgent(BaseAgent):
     async def auto_fix_deterministic(self, task: TaskNode) -> int:
         """Fix common deterministic errors without calling the LLM.
 
-        Attempts to import each source file in a subprocess and fixes:
-        - Package-style imports rewritten to flat sibling imports
-        - Missing imports (NameError for known stdlib/typing names)
-        - Missing module imports (ModuleNotFoundError for known modules)
-        - Mutable default arguments in __init__ (e.g. param=[])
-        - Unused/duplicate imports via ruff --fix (if ruff is available)
+        Pipeline (each stage gated by cascade config):
+          1. _fix_package_imports_pass — flatten package-style imports
+          2. _apply_ast_fixes_pass — mutable defaults + attr/method shadowing
+          3. _apply_ruff_autofix — ruff --fix on code + test files
+          4. _apply_semgrep_autofix — PMCA rule auto-fixes
+          5. _fix_missing_imports_iteratively — try-import loop (3 passes)
 
-        Returns the number of fixes applied.
+        Returns total number of fixes applied.
         """
         if not task.code_files or not self._workspace_path:
             return 0
 
-        # First pass: fix package-style imports (e.g. from taskboard.models → from models)
-        fixes_applied = 0
         ws = Path(self._workspace_path)
+        fixes = 0
+
         if self._cascade.import_fixes:
-            pkg_fixes = self._fix_package_imports(ws)
-            if pkg_fixes > 0:
-                fixes_applied += pkg_fixes
-                self._log.info(
-                    f"Auto-fixed: {pkg_fixes} package-style import(s) rewritten to flat"
-                )
-
+            fixes += self._fix_package_imports_pass(ws)
         if self._cascade.ast_fixes:
-            # Second pass: fix mutable default arguments (no subprocess needed)
-            for code_file in task.code_files:
-                file_path = Path(self._workspace_path) / code_file
-                if not file_path.exists() or not code_file.endswith(".py"):
-                    continue
-                count = self._fix_mutable_defaults(file_path)
-                if count > 0:
-                    fixes_applied += count
-                    self._log.info(
-                        f"Auto-fixed: {count} mutable default arg(s) in {code_file}"
-                    )
+            fixes += self._apply_ast_fixes_pass(task, ws)
 
-            # Third pass: fix attribute/method shadowing (self.size + def size())
-            for code_file in task.code_files:
-                file_path = Path(self._workspace_path) / code_file
-                if not file_path.exists() or not code_file.endswith(".py"):
-                    continue
-                count = self._fix_attr_method_shadowing(file_path)
-                if count > 0:
-                    fixes_applied += count
-                    self._log.info(
-                        f"Auto-fixed: {count} attribute/method shadowing(s) in {code_file}"
-                    )
+        fixes += await self._apply_ruff_autofix(task, ws)
+        fixes += await self._apply_semgrep_autofix(task, ws)
 
-        # Ruff auto-fix pass: clean unused/duplicate imports, etc.
+        if self._cascade.import_fixes:
+            fixes += await self._fix_missing_imports_iteratively(task, ws)
+
+        return fixes
+
+    def _fix_package_imports_pass(self, ws: Path) -> int:
+        """Rewrite ``from pkg.mod import X`` → ``from mod import X``."""
+        pkg_fixes = self._fix_package_imports(ws)
+        if pkg_fixes > 0:
+            self._log.info(
+                f"Auto-fixed: {pkg_fixes} package-style import(s) rewritten to flat"
+            )
+        return pkg_fixes
+
+    def _apply_ast_fixes_pass(self, task: TaskNode, ws: Path) -> int:
+        """Mutable defaults + attribute/method shadowing across all task code files."""
+        fixes = 0
+        for file_path, code_file in self._iter_python_code_files(task, ws):
+            mutable = self._fix_mutable_defaults(file_path)
+            if mutable > 0:
+                fixes += mutable
+                self._log.info(
+                    f"Auto-fixed: {mutable} mutable default arg(s) in {code_file}"
+                )
+            shadow = self._fix_attr_method_shadowing(file_path)
+            if shadow > 0:
+                fixes += shadow
+                self._log.info(
+                    f"Auto-fixed: {shadow} attribute/method shadowing(s) in {code_file}"
+                )
+        return fixes
+
+    async def _apply_ruff_autofix(self, task: TaskNode, ws: Path) -> int:
+        """ruff --fix over code + test files. Cleans unused/duplicate imports."""
         from pmca.utils.linters import ruff_autofix
+        fixes = 0
+        for file_path, _ in self._iter_python_files(task, ws, include_tests=True):
+            fixes += await ruff_autofix(file_path, ws)
+        return fixes
 
-        all_files = list(task.code_files) + list(task.test_files)
-        for code_file in all_files:
-            file_path = ws / code_file
-            if not file_path.exists() or not code_file.endswith(".py"):
-                continue
-            count = await ruff_autofix(file_path, ws)
-            fixes_applied += count
-
-        # Semgrep auto-fix pass: fix known 7B anti-patterns (graceful skip if not installed)
+    async def _apply_semgrep_autofix(self, task: TaskNode, ws: Path) -> int:
+        """Semgrep rule auto-fix over code files. Graceful skip if semgrep missing."""
         from pmca.utils.linters import semgrep_autofix
+        fixes = 0
+        for file_path, _ in self._iter_python_code_files(task, ws):
+            fixes += await semgrep_autofix(file_path, ws)
+        return fixes
 
-        for code_file in task.code_files:
-            file_path = ws / code_file
-            if not file_path.exists() or not code_file.endswith(".py"):
-                continue
-            count = await semgrep_autofix(file_path, ws)
-            fixes_applied += count
+    async def _fix_missing_imports_iteratively(
+        self, task: TaskNode, ws: Path,
+    ) -> int:
+        """Try-import-each-file loop, injecting known imports for NameError/ImportError.
 
-        if not self._cascade.import_fixes:
-            return fixes_applied
-
+        Up to 3 passes — multiple imports may be missing, and each injection
+        can surface the next missing name.
+        """
         python_exe = self._find_python()
-        max_passes = 3  # multiple imports may be missing
-
-        for _ in range(max_passes):
-            fixed_this_pass = 0
+        fixes = 0
+        for _ in range(3):
+            pass_fixes = 0
             for code_file in task.code_files:
-                file_path = Path(self._workspace_path) / code_file
-                if not file_path.exists() or not code_file.endswith(".py"):
+                file_path = ws / code_file
+                if not self._is_python_file(file_path, code_file):
                     continue
-
-                # Try to import the file in a subprocess
-                module_path = code_file.replace("/", ".").removesuffix(".py")
-                try:
-                    proc = await asyncio.create_subprocess_exec(
-                        python_exe, "-c", f"import {module_path}",
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        cwd=self._workspace_path,
-                        env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
-                    )
-                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
-                    err_output = stderr.decode()
-                except (TimeoutError, FileNotFoundError):
-                    continue
-
-                if proc.returncode == 0:
-                    continue  # imports fine
-
-                # Parse NameError: name 'X' is not defined
-                name_match = re.search(
-                    r"NameError: name '(\w+)' is not defined", err_output
+                pass_fixes += await self._fix_one_file_imports(
+                    file_path, code_file, python_exe,
                 )
-                if name_match:
-                    missing_name = name_match.group(1)
-                    import_line = _KNOWN_IMPORTS.get(missing_name)
-                    if import_line:
-                        content = file_path.read_text()
-                        # Don't add duplicate imports
-                        if import_line not in content:
-                            content = import_line + "\n" + content
-                            file_path.write_text(content)
-                            fixes_applied += 1
-                            fixed_this_pass += 1
-                            self._log.info(
-                                f"Auto-fixed: added '{import_line}' to {code_file}"
-                            )
-                        continue
+            if pass_fixes == 0:
+                break
+            fixes += pass_fixes
+        return fixes
 
-                # Parse ImportError / ModuleNotFoundError
-                import_match = re.search(
-                    r"(?:ImportError|ModuleNotFoundError): "
-                    r"No module named '(\w+)'",
-                    err_output,
-                )
-                if import_match:
-                    missing_module = import_match.group(1)
-                    import_line = _KNOWN_IMPORTS.get(missing_module)
-                    if import_line:
-                        content = file_path.read_text()
-                        if import_line not in content:
-                            content = import_line + "\n" + content
-                            file_path.write_text(content)
-                            fixes_applied += 1
-                            fixed_this_pass += 1
-                            self._log.info(
-                                f"Auto-fixed: added '{import_line}' to {code_file}"
-                            )
+    async def _fix_one_file_imports(
+        self, file_path: Path, code_file: str, python_exe: str,
+    ) -> int:
+        """Try to import one file; if it fails on a known name/module, inject the import."""
+        err_output = await self._try_import_file(file_path, code_file, python_exe)
+        if err_output is None:
+            return 0  # imports fine or subprocess failed
 
-            if fixed_this_pass == 0:
-                break  # No more fixable errors
+        import_line = self._missing_import_from_error(err_output)
+        if not import_line:
+            return 0
+        return self._inject_import_line(file_path, code_file, import_line)
 
-        return fixes_applied
+    async def _try_import_file(
+        self, file_path: Path, code_file: str, python_exe: str,
+    ) -> str | None:
+        """Subprocess `python -c "import MODULE"`. Returns stderr on failure, None on success."""
+        if not file_path.exists():
+            return None
+        module_path = code_file.replace("/", ".").removesuffix(".py")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                python_exe, "-c", f"import {module_path}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._workspace_path,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": _build_pythonpath(self._workspace_path),
+                },
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+        except (TimeoutError, FileNotFoundError):
+            return None
+
+        if proc.returncode == 0:
+            return None
+        return stderr.decode()
+
+    @staticmethod
+    def _missing_import_from_error(err_output: str) -> str | None:
+        """Map NameError / ImportError / ModuleNotFoundError to a known import line."""
+        name_match = re.search(r"NameError: name '(\w+)' is not defined", err_output)
+        if name_match:
+            return _KNOWN_IMPORTS.get(name_match.group(1))
+        module_match = re.search(
+            r"(?:ImportError|ModuleNotFoundError): No module named '(\w+)'",
+            err_output,
+        )
+        if module_match:
+            return _KNOWN_IMPORTS.get(module_match.group(1))
+        return None
+
+    def _inject_import_line(
+        self, file_path: Path, code_file: str, import_line: str,
+    ) -> int:
+        """Prepend an import line to file_path if not already present. Returns 0 or 1."""
+        content = file_path.read_text()
+        if import_line in content:
+            return 0
+        file_path.write_text(import_line + "\n" + content)
+        self._log.info(f"Auto-fixed: added '{import_line}' to {code_file}")
+        return 1
+
+    def _iter_python_code_files(self, task: TaskNode, ws: Path):
+        """Yield (file_path, code_file) for task.code_files that are existing Python files."""
+        yield from self._iter_python_files(task, ws, include_tests=False)
+
+    def _iter_python_files(self, task: TaskNode, ws: Path, include_tests: bool):
+        """Yield (file_path, code_file) for existing Python files in the task."""
+        files = list(task.code_files)
+        if include_tests:
+            files += list(task.test_files)
+        for code_file in files:
+            file_path = ws / code_file
+            if self._is_python_file(file_path, code_file):
+                yield file_path, code_file
+
+    @staticmethod
+    def _is_python_file(file_path: Path, code_file: str) -> bool:
+        return file_path.exists() and code_file.endswith(".py")
 
     # ------------------------------------------------------------------
     # Phase 2B — Defensive guard injection (preventive, pre-test)
