@@ -2065,12 +2065,12 @@ class WatcherAgent(BaseAgent):
         return None
 
     async def calibrate_tests(self, task: TaskNode) -> int:
-        """Run tests and fix assertion value mismatches.
+        """Run tests and patch assertion values the LLM got wrong.
 
-        After code + tests are generated, the LLM often gets arithmetic wrong
-        in test assertions.  This method runs each test, and for pure value
-        mismatches (assert X == Y where X is the actual code result), patches
-        the test file to use the actual value.
+        For each failing Python test file, runs pytest, then rewrites
+        ``assert X == Y`` expected values where the actual result is within a
+        conservative confidence band (≤25% relative diff, order-of-magnitude
+        ratios, case-only string differences).
 
         Returns the number of assertions that were calibrated.
         """
@@ -2083,154 +2083,158 @@ class WatcherAgent(BaseAgent):
 
         python_exe = self._find_python()
         calibrated = 0
-
         for test_file in py_tests:
             test_path = Path(self._workspace_path) / test_file
             if not test_path.exists():
                 continue
-
-            # Run pytest with verbose output to capture assertion details
-            try:
-                ws_abs = Path(self._workspace_path).resolve()
-                proc = await asyncio.create_subprocess_exec(
-                    python_exe, "-m", "pytest", test_file,
-                    "-v", "--tb=long", "--showlocals", "--no-header",
-                    f"--rootdir={ws_abs}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(ws_abs),
-                    env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                output = stdout.decode() + stderr.decode()
-            except (TimeoutError, FileNotFoundError):
-                continue
-
-            if proc.returncode == 0:
-                continue  # All tests pass, nothing to calibrate
-
-            # Parse assertion mismatches: "assert X == Y" where X is actual
-            # Look for patterns like:
-            #   E       assert 3.625 == 4.0
-            #   E       AssertionError: assert 3.625 == 4.0
-            test_content = test_path.read_text()
-            original_content = test_content
-
-            # Find assertion errors with numeric mismatches
-            # Pattern: assert <actual> == <expected>
-            for match in re.finditer(
-                r"assert\s+([\d.]+(?:e[+-]?\d+)?)\s*==\s*([\d.]+(?:e[+-]?\d+)?)",
-                output,
-            ):
-                actual_str = match.group(1)
-                expected_str = match.group(2)
-                if actual_str == expected_str:
-                    continue
-
-                try:
-                    actual_val = float(actual_str)
-                    expected_val = float(expected_str)
-                except ValueError:
-                    continue
-
-                should_calibrate = False
-
-                if expected_val != 0 and actual_val != 0:
-                    relative_diff = abs(actual_val - expected_val) / abs(expected_val)
-
-                    # Negative sign flip: actual == -expected → code bug, don't calibrate
-                    if abs(actual_val + expected_val) < 1e-9:
-                        self._log.debug(
-                            f"Skipping calibration {expected_str} → {actual_str} "
-                            f"(sign flip — likely a formula bug)"
-                        )
-                        continue
-
-                    # Close values (within 25%) — likely arithmetic error in test
-                    if relative_diff <= 0.25:
-                        should_calibrate = True
-
-                    # Order-of-magnitude check: 10x, 100x, 1000x difference
-                    # → likely a decimal point error, safe to calibrate
-                    elif actual_val != 0:
-                        ratio = actual_val / expected_val
-                        if ratio in (10.0, 100.0, 1000.0, 0.1, 0.01, 0.001):
-                            self._log.info(
-                                f"Order-of-magnitude mismatch: {expected_str} → "
-                                f"{actual_str} (ratio={ratio})"
-                            )
-                            should_calibrate = True
-                elif expected_val == 0:
-                    # Zero-value handling: use absolute threshold
-                    if abs(actual_val) < 1.0:
-                        should_calibrate = True
-                    else:
-                        self._log.debug(
-                            f"Skipping calibration {expected_str} → {actual_str} "
-                            f"(expected 0, actual too far)"
-                        )
-                        continue
-                elif actual_val == 0:
-                    # Code returns 0 but test expects non-zero — code bug
-                    self._log.debug(
-                        f"Skipping calibration {expected_str} → {actual_str} "
-                        f"(code returns 0 — likely a code bug)"
-                    )
-                    continue
-
-                if not should_calibrate:
-                    self._log.debug(
-                        f"Skipping calibration {expected_str} → {actual_str} "
-                        f"(values too far apart)"
-                    )
-                    continue
-
-                # Replace the wrong expected value in the test file
-                old_assertion = f"== {expected_str}"
-                new_assertion = f"== {actual_str}"
-                if old_assertion in test_content:
-                    test_content = test_content.replace(
-                        old_assertion, new_assertion, 1
-                    )
-                    calibrated += 1
-                    self._log.info(
-                        f"Calibrated test assertion: {expected_str} → {actual_str}"
-                    )
-
-            # --- String assertion calibration ---
-            # Match patterns like: AssertionError: assert 'Foo' == 'foo'
-            for str_match in re.finditer(
-                r"assert\s+'([^']+)'\s*==\s*'([^']+)'",
-                output,
-            ):
-                actual_s = str_match.group(1)
-                expected_s = str_match.group(2)
-                if actual_s == expected_s:
-                    continue
-                # Only calibrate case differences
-                if actual_s.lower() == expected_s.lower():
-                    old_str = f"== '{expected_s}'"
-                    new_str = f"== '{actual_s}'"
-                    if old_str in test_content:
-                        test_content = test_content.replace(old_str, new_str, 1)
-                        calibrated += 1
-                        self._log.info(
-                            f"Calibrated string assertion: '{expected_s}' → '{actual_s}'"
-                        )
-                    # Also try double quotes
-                    old_str_dq = f'== "{expected_s}"'
-                    new_str_dq = f'== "{actual_s}"'
-                    if old_str_dq in test_content:
-                        test_content = test_content.replace(old_str_dq, new_str_dq, 1)
-                        calibrated += 1
-                        self._log.info(
-                            f"Calibrated string assertion: \"{expected_s}\" → \"{actual_s}\""
-                        )
-
-            if test_content != original_content:
-                test_path.write_text(test_content)
-
+            output = await self._run_pytest_for_calibration(test_file, python_exe)
+            if output is None:
+                continue  # tests passed or subprocess failed
+            calibrated += self._calibrate_one_test_file(test_path, output)
         return calibrated
+
+    async def _run_pytest_for_calibration(
+        self, test_file: str, python_exe: str,
+    ) -> str | None:
+        """Run pytest on one file. Returns combined stdout+stderr, or None when nothing to do."""
+        try:
+            ws_abs = Path(self._workspace_path).resolve()
+            proc = await asyncio.create_subprocess_exec(
+                python_exe, "-m", "pytest", test_file,
+                "-v", "--tb=long", "--showlocals", "--no-header",
+                f"--rootdir={ws_abs}",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(ws_abs),
+                env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except (TimeoutError, FileNotFoundError):
+            return None
+
+        if proc.returncode == 0:
+            return None  # all passing → nothing to calibrate
+        return stdout.decode() + stderr.decode()
+
+    def _calibrate_one_test_file(self, test_path: Path, output: str) -> int:
+        """Apply numeric + string calibrations to one test file. Returns fix count."""
+        test_content = test_path.read_text()
+        original = test_content
+
+        numeric_fixes, test_content = self._calibrate_numeric_assertions(output, test_content)
+        string_fixes, test_content = self._calibrate_string_assertions(output, test_content)
+
+        if test_content != original:
+            test_path.write_text(test_content)
+        return numeric_fixes + string_fixes
+
+    def _calibrate_numeric_assertions(
+        self, output: str, test_content: str,
+    ) -> tuple[int, str]:
+        """Rewrite numeric ``== expected`` assertions where actual is clearly closer."""
+        fixes = 0
+        for match in re.finditer(
+            r"assert\s+([\d.]+(?:e[+-]?\d+)?)\s*==\s*([\d.]+(?:e[+-]?\d+)?)",
+            output,
+        ):
+            actual_str, expected_str = match.group(1), match.group(2)
+            if not self._should_calibrate_numeric(actual_str, expected_str):
+                continue
+            old, new = f"== {expected_str}", f"== {actual_str}"
+            if old in test_content:
+                test_content = test_content.replace(old, new, 1)
+                fixes += 1
+                self._log.info(
+                    f"Calibrated test assertion: {expected_str} → {actual_str}"
+                )
+        return fixes, test_content
+
+    def _should_calibrate_numeric(self, actual_str: str, expected_str: str) -> bool:
+        """Confidence check: is actual close enough to expected that a test typo is likely?"""
+        if actual_str == expected_str:
+            return False
+        try:
+            actual_val = float(actual_str)
+            expected_val = float(expected_str)
+        except ValueError:
+            return False
+
+        # Sign flip — formula bug in code, don't mask it.
+        if expected_val != 0 and actual_val != 0:
+            if abs(actual_val + expected_val) < 1e-9:
+                self._log.debug(
+                    f"Skipping calibration {expected_str} → {actual_str} "
+                    f"(sign flip — likely a formula bug)"
+                )
+                return False
+
+            relative_diff = abs(actual_val - expected_val) / abs(expected_val)
+            if relative_diff <= 0.25:
+                return True  # within 25% — likely test arithmetic error
+
+            ratio = actual_val / expected_val
+            if ratio in (10.0, 100.0, 1000.0, 0.1, 0.01, 0.001):
+                self._log.info(
+                    f"Order-of-magnitude mismatch: {expected_str} → "
+                    f"{actual_str} (ratio={ratio})"
+                )
+                return True
+
+            self._log.debug(
+                f"Skipping calibration {expected_str} → {actual_str} "
+                f"(values too far apart)"
+            )
+            return False
+
+        if expected_val == 0:
+            if abs(actual_val) < 1.0:
+                return True
+            self._log.debug(
+                f"Skipping calibration {expected_str} → {actual_str} "
+                f"(expected 0, actual too far)"
+            )
+            return False
+
+        # actual_val == 0 — code returns 0 when test expects non-zero → code bug
+        self._log.debug(
+            f"Skipping calibration {expected_str} → {actual_str} "
+            f"(code returns 0 — likely a code bug)"
+        )
+        return False
+
+    def _calibrate_string_assertions(
+        self, output: str, test_content: str,
+    ) -> tuple[int, str]:
+        """Rewrite ``assert 'X' == 'Y'`` where the only difference is case."""
+        fixes = 0
+        for match in re.finditer(r"assert\s+'([^']+)'\s*==\s*'([^']+)'", output):
+            actual_s, expected_s = match.group(1), match.group(2)
+            if actual_s == expected_s or actual_s.lower() != expected_s.lower():
+                continue
+            test_content, added = self._replace_string_assertion(
+                test_content, expected_s, actual_s,
+            )
+            fixes += added
+        return fixes, test_content
+
+    def _replace_string_assertion(
+        self, test_content: str, expected_s: str, actual_s: str,
+    ) -> tuple[str, int]:
+        """Swap ``== 'expected'`` → ``== 'actual'`` (both single- and double-quoted forms)."""
+        fixes = 0
+        pairs = (
+            (f"== '{expected_s}'", f"== '{actual_s}'", "'"),
+            (f'== "{expected_s}"', f'== "{actual_s}"', '"'),
+        )
+        for old, new, quote in pairs:
+            if old in test_content:
+                test_content = test_content.replace(old, new, 1)
+                fixes += 1
+                self._log.info(
+                    f"Calibrated string assertion: "
+                    f"{quote}{expected_s}{quote} → {quote}{actual_s}{quote}"
+                )
+        return test_content, fixes
 
     async def oracle_repair_tests(self, task: TaskNode) -> int:
         """Second-pass oracle: trust non-trivial actual values for remaining assertion failures.
