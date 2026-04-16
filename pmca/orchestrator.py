@@ -666,9 +666,33 @@ class Orchestrator:
         return difficulty, reasoning_heavy, reasoning_signals
 
     async def code_phase(self, task: TaskNode, think: bool | None = None) -> TaskNode:
-        """Coder implements a leaf-level task."""
-        log.info(f"[green]CODE[/green] phase for: {task.title}")
+        """Coder implements a leaf-level task.
 
+        Pipeline:
+          1. transition state → CODING, emit PHASE_START
+          2. select coder role (adaptive routing for reasoning-heavy tasks)
+          3. optionally generate+review tests first (test-first mode)
+          4. generate code (best-of-N | test-first | plain)
+          5. persist files, emit CODE_GENERATED
+        """
+        log.info(f"[green]CODE[/green] phase for: {task.title}")
+        self._begin_code_phase(task)
+
+        context = self._context_manager.build_context(task)
+        difficulty, coder_role = self._select_coder_role(task, think)
+
+        tests_content = ""
+        if self._config.cascade.test_first:
+            tests_content, context = await self._generate_and_review_tests(task, context)
+
+        code_files = await self._generate_code_files(
+            task, context, difficulty, coder_role, think, tests_content,
+        )
+        self._persist_code_files(task, code_files)
+        return task
+
+    def _begin_code_phase(self, task: TaskNode) -> None:
+        """Transition task into CODING and emit the phase-start event."""
         if task.status not in (TaskStatus.DESIGNING, TaskStatus.REVIEWING):
             task.transition(TaskStatus.CODING)
         else:
@@ -676,7 +700,6 @@ class Orchestrator:
             task.updated_at = _now()
 
         self._save_state()
-
         self._emit(CascadeEvent(
             event_type=EventType.PHASE_START,
             task_title=task.title,
@@ -685,123 +708,161 @@ class Orchestrator:
             message=f"Coding: {task.title}",
         ))
 
-        context = self._context_manager.build_context(task)
-        test_first = self._config.cascade.test_first
-        best_of_n = self._config.cascade.best_of_n
+    def _select_coder_role(
+        self, task: TaskNode, think: bool | None,
+    ) -> tuple[str, AgentRole | None]:
+        """Pick coder role via adaptive routing and stash overrides on task."""
         difficulty, reasoning_heavy, reasoning_signals = self._estimate_task_profile(task)
-
-        # Adaptive routing: select reasoning model for complex reasoning tasks
         coder_role: AgentRole | None = None
         if reasoning_heavy and AgentRole.CODER_REASONING in self._config.models:
             coder_role = AgentRole.CODER_REASONING
-            log.info(f"Task difficulty: {difficulty}, reasoning_heavy=True ({reasoning_signals} signals) → routing to coder_reasoning")
+            log.info(
+                f"Task difficulty: {difficulty}, reasoning_heavy=True "
+                f"({reasoning_signals} signals) → routing to coder_reasoning"
+            )
         else:
-            log.info(f"Task difficulty: {difficulty}, reasoning_signals={reasoning_signals} → using default coder")
-        # Store for use during fix retries
+            log.info(
+                f"Task difficulty: {difficulty}, "
+                f"reasoning_signals={reasoning_signals} → using default coder"
+            )
         task._coder_role_override = coder_role
         task._think_override = think
+        return difficulty, coder_role
 
-        # --- Test-first: generate tests from spec, then implement against them ---
-        tests_content = ""
-        if test_first:
-            log.info("Test-first mode: generating tests from specification")
-            if self._tester is not None:
-                test_files = await self._tester.generate_tests(task, context)
-            else:
-                test_files = await self._coder.generate_tests(task, context)
+    async def _generate_and_review_tests(
+        self, task: TaskNode, context: str,
+    ) -> tuple[str, str]:
+        """Generate tests, review quality up to N times, persist, return (tests_content, context).
+
+        Test-quality review is skipped in project mode: 7B reviewers are unreliable on
+        small leaf modules and tests are validated by actual execution later.
+        """
+        log.info("Test-first mode: generating tests from specification")
+        test_files = await self._call_tester_or_coder_for_tests(task, context)
+        tests_content = "\n\n".join(cf.content for cf in test_files)
+
+        if not self._project_mode:
+            tests_content, context, test_files = await self._review_test_quality(
+                task, context, test_files, tests_content,
+            )
+
+        for cf in test_files:
+            self._file_manager.write_file(cf.path, cf.content)
+            task.test_files[cf.path] = cf.content
+        log.info(f"Generated {len(test_files)} test file(s)")
+        return tests_content, context
+
+    async def _call_tester_or_coder_for_tests(self, task: TaskNode, context: str):
+        """Prefer dedicated tester agent, fall back to coder."""
+        if self._tester is not None:
+            return await self._tester.generate_tests(task, context)
+        return await self._coder.generate_tests(task, context)
+
+    async def _review_test_quality(
+        self, task: TaskNode, context: str, test_files, tests_content: str,
+    ) -> tuple[str, str, list]:
+        """Up to 3 review+regenerate cycles on generated tests. Returns updated tuple."""
+        max_test_attempts = 3
+        for test_attempt in range(max_test_attempts):
+            test_review = await self._reviewer.verify_tests(
+                tests_content, task.spec, context,
+            )
+            if test_review.passed:
+                log.info(f"Test quality review passed (attempt {test_attempt + 1})")
+                return tests_content, context, test_files
+
+            log.warning(
+                f"Test quality review failed (attempt {test_attempt + 1}/"
+                f"{max_test_attempts}): {test_review.issues}"
+            )
+            issue_feedback = "\n".join(f"- {i}" for i in test_review.issues)
+            context = (
+                context
+                + "\n\n## Test Review Feedback (fix these issues)\n"
+                + issue_feedback
+            )
+            test_files = await self._call_tester_or_coder_for_tests(task, context)
             tests_content = "\n\n".join(cf.content for cf in test_files)
 
-            # Test quality review gate — skip in project mode (7B reviewer
-            # is unreliable on small leaf modules and tests are validated
-            # by actually running them during the review phase)
-            if not self._project_mode:
-                max_test_attempts = 3
-                for test_attempt in range(max_test_attempts):
-                    test_review = await self._reviewer.verify_tests(
-                        tests_content, task.spec, context,
-                    )
-                    if test_review.passed:
-                        log.info(f"Test quality review passed (attempt {test_attempt + 1})")
-                        break
+        log.warning("Test review failed after all attempts, using last tests")
+        return tests_content, context, test_files
 
-                    log.warning(
-                        f"Test quality review failed (attempt {test_attempt + 1}/"
-                        f"{max_test_attempts}): {test_review.issues}"
-                    )
-                    # Regenerate tests with feedback
-                    issue_feedback = "\n".join(f"- {i}" for i in test_review.issues)
-                    context = (
-                        context
-                        + "\n\n## Test Review Feedback (fix these issues)\n"
-                        + issue_feedback
-                    )
-                    if self._tester is not None:
-                        test_files = await self._tester.generate_tests(task, context)
-                    else:
-                        test_files = await self._coder.generate_tests(task, context)
-                    tests_content = "\n\n".join(cf.content for cf in test_files)
-                else:
-                    log.warning("Test review failed after all attempts, using last tests")
-
-            for cf in test_files:
-                self._file_manager.write_file(cf.path, cf.content)
-                task.test_files[cf.path] = cf.content
-            log.info(f"Generated {len(test_files)} test file(s)")
-
-        # --- Best-of-N or single generation ---
+    async def _generate_code_files(
+        self,
+        task: TaskNode,
+        context: str,
+        difficulty: str,
+        coder_role: AgentRole | None,
+        think: bool | None,
+        tests_content: str,
+    ) -> list:
+        """Dispatch to best-of-N, test-first, or plain implementation."""
+        best_of_n = self._config.cascade.best_of_n
         if best_of_n > 1:
-            log.info(f"Best-of-{best_of_n} sampling: generating {best_of_n} candidates")
-            all_candidate_paths: set[str] = set()
+            return await self._generate_best_of_n(task, context, best_of_n, tests_content)
+        if self._config.cascade.test_first and tests_content:
+            return await self._coder.implement_with_tests(task, context, tests_content)
+        return await self._coder.implement(
+            task, context,
+            difficulty=difficulty,
+            role_override=coder_role,
+            think=think,
+            spec_literals=self._config.cascade.spec_literals,
+        )
 
-            async def _test_runner(candidate_files):
-                """Write candidate files temporarily and run tests."""
-                for cf in candidate_files:
-                    self._file_manager.write_file(cf.path, cf.content)
-                    all_candidate_paths.add(cf.path)
-                # Temporarily attach code files to task for test runner
-                old_code_files = list(task.code_files)
-                task.code_files = [cf.path for cf in candidate_files
-                                   if not (cf.path.startswith("test") or "/test_" in cf.path)]
-                result = await self._watcher.run_tests(task)
-                task.code_files = old_code_files
-                return result
+    async def _generate_best_of_n(
+        self, task: TaskNode, context: str, best_of_n: int, tests_content: str,
+    ) -> list:
+        """Best-of-N sampling: generate candidates, test each, keep the winner."""
+        log.info(f"Best-of-{best_of_n} sampling: generating {best_of_n} candidates")
+        all_candidate_paths: set[str] = set()
 
-            code_files = await self._coder.implement_best_of_n(
-                task, context, best_of_n, _test_runner,
-                tests_content=tests_content,
-                cross_execution=self._config.cascade.cross_execution,
-            )
+        async def _test_runner(candidate_files):
+            for cf in candidate_files:
+                self._file_manager.write_file(cf.path, cf.content)
+                all_candidate_paths.add(cf.path)
+            old_code_files = list(task.code_files)
+            task.code_files = [
+                cf.path for cf in candidate_files
+                if not (cf.path.startswith("test") or "/test_" in cf.path)
+            ]
+            result = await self._watcher.run_tests(task)
+            task.code_files = old_code_files
+            return result
 
-            # Clean up orphan files from losing candidates
-            winner_paths = {cf.path for cf in code_files}
-            for orphan in all_candidate_paths - winner_paths:
-                try:
-                    (self._workspace_path / orphan).unlink(missing_ok=True)
-                except OSError:
-                    pass
-        elif test_first and tests_content:
-            code_files = await self._coder.implement_with_tests(
-                task, context, tests_content,
-            )
-        else:
-            code_files = await self._coder.implement(task, context, difficulty=difficulty, role_override=coder_role, think=think, spec_literals=self._config.cascade.spec_literals)
+        code_files = await self._coder.implement_best_of_n(
+            task, context, best_of_n, _test_runner,
+            tests_content=tests_content,
+            cross_execution=self._config.cascade.cross_execution,
+        )
+        self._cleanup_losing_candidates(all_candidate_paths, {cf.path for cf in code_files})
+        return code_files
 
+    def _cleanup_losing_candidates(
+        self, all_paths: set[str], winner_paths: set[str],
+    ) -> None:
+        """Delete orphan candidate files from losing best-of-N candidates."""
+        for orphan in all_paths - winner_paths:
+            try:
+                (self._workspace_path / orphan).unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _persist_code_files(self, task: TaskNode, code_files: list) -> None:
+        """Write files, attach to task, emit CODE_GENERATED, save state."""
         for cf in code_files:
             self._file_manager.write_file(cf.path, cf.content)
             if cf.path.startswith("test") or "/test_" in cf.path:
                 task.test_files[cf.path] = cf.content
             else:
                 task.code_files[cf.path] = cf.content
-                # Store snippet for multi-file assembly
                 if self._project_mode:
-                    key = f"{task.id}:{cf.path}"
-                    self._snippet_store[key] = cf.content
+                    self._snippet_store[f"{task.id}:{cf.path}"] = cf.content
 
         log.info(
             f"Generated {len(code_files)} files for '{task.title}': "
             f"{[cf.path for cf in code_files]}"
         )
-
         self._emit(CascadeEvent(
             event_type=EventType.CODE_GENERATED,
             task_title=task.title,
@@ -810,9 +871,7 @@ class Orchestrator:
             message=f"Generated {len(code_files)} files",
             data={"files": [cf.path for cf in code_files]},
         ))
-
         self._save_state()
-        return task
 
     async def review_phase(self, task: TaskNode) -> TaskNode:
         """Review and verify code for a leaf task.
