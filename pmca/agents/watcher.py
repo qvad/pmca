@@ -67,6 +67,11 @@ _MULTILANG_DEF_RE = re.compile(
     re.MULTILINE,
 )
 
+# Pytest --showlocals variables that should never be reported as user locals.
+_SKIP_LOCALS: frozenset[str] = frozenset({
+    "self", "@py_builtins", "@py_assert", "request",
+})
+
 # Common imports that LLMs forget — maps name → import statement
 _KNOWN_IMPORTS: dict[str, str] = {
     # typing
@@ -1685,154 +1690,168 @@ class WatcherAgent(BaseAgent):
     def extract_structured_errors(output: str) -> list[TestError]:
         """Extract structured TestError objects from pytest output.
 
-        Parses pytest verbose output to identify test names, error types,
-        and actual vs expected values for assertion errors.
-        """
-        errors: list[TestError] = []
-        lines = output.strip().split("\n")
+        Three-phase parse:
+          1. Walk per-failure sections (between ``___ test_name ___`` headers)
+          2. If nothing parsed, fall back to FAILED-line names
+          3. If still nothing, handle pytest collection errors
 
-        # First pass: find FAILED test names
-        failed_tests: list[str] = []
-        for line in lines:
-            # Match "FAILED tests/test_foo.py::test_bar - AssertionError..."
+        Caps the result at 10 errors.
+        """
+        failed_tests = WatcherAgent._find_failed_test_names(output)
+        errors = WatcherAgent._parse_failure_sections(output)
+
+        if not errors and failed_tests:
+            errors = WatcherAgent._fallback_from_failed_names(output, failed_tests)
+        if not errors:
+            errors = WatcherAgent._fallback_from_collection_errors(output)
+
+        return errors[:10]
+
+    @staticmethod
+    def _find_failed_test_names(output: str) -> list[str]:
+        """Collect ``tests/foo.py::test_bar`` names from pytest FAILED lines."""
+        failed: list[str] = []
+        for line in output.strip().split("\n"):
             m = re.match(r"FAILED\s+(\S+::\S+)", line.strip())
             if m:
-                failed_tests.append(m.group(1))
+                failed.append(m.group(1))
+        return failed
 
-        # Second pass: parse each failure section (between "_ test_name _" lines)
-        # pytest uses "_____ test_name _____" as section headers
+    @staticmethod
+    def _parse_failure_sections(output: str) -> list[TestError]:
+        """Parse each ``___ test_name ___`` section into a TestError."""
         sections = re.split(r"_{3,}\s+(\S+)\s+_{3,}", output)
-
-        # sections[0] is pre-header, then alternating [name, content, name, content, ...]
+        errors: list[TestError] = []
+        # sections = [pre_header, name0, content0, name1, content1, ...]
         for i in range(1, len(sections) - 1, 2):
             test_name = sections[i]
             section_content = sections[i + 1] if i + 1 < len(sections) else ""
+            errors.append(WatcherAgent._build_test_error(test_name, section_content))
+        return errors
 
-            error_type = "Unknown"
-            actual_value = None
-            expected_value = None
-            source_line = None
+    @staticmethod
+    def _build_test_error(test_name: str, section_content: str) -> TestError:
+        """Build a TestError from one failure section."""
+        error_type, source_line, actual, expected = (
+            WatcherAgent._classify_section(section_content)
+        )
+        traceback_text = WatcherAgent._extract_traceback(section_content)
+        local_vars = WatcherAgent._extract_local_variables(section_content)
+        return TestError(
+            test_name=test_name,
+            error_type=error_type,
+            actual_value=actual,
+            expected_value=expected,
+            traceback=traceback_text,
+            source_line=source_line,
+            local_variables=local_vars or None,
+        )
 
-            # Detect error type
-            if "NameError" in section_content:
-                error_type = "NameError"
-                m = re.search(r"NameError: name '(\w+)' is not defined", section_content)
-                if m:
-                    source_line = f"NameError: name '{m.group(1)}' is not defined"
-            elif "ImportError" in section_content or "ModuleNotFoundError" in section_content:
-                error_type = "ImportError"
-            elif "SyntaxError" in section_content:
-                error_type = "SyntaxError"
-            elif "AssertionError" in section_content or "assert " in section_content:
-                error_type = "AssertionError"
+    @staticmethod
+    def _classify_section(
+        content: str,
+    ) -> tuple[str, str | None, str | None, str | None]:
+        """Detect error type and pull source_line / actual / expected when present."""
+        if "NameError" in content:
+            m = re.search(r"NameError: name '(\w+)' is not defined", content)
+            source = f"NameError: name '{m.group(1)}' is not defined" if m else None
+            return "NameError", source, None, None
+        if "ImportError" in content or "ModuleNotFoundError" in content:
+            return "ImportError", None, None, None
+        if "SyntaxError" in content:
+            return "SyntaxError", None, None, None
+        if "AssertionError" in content or "assert " in content:
+            actual, expected = WatcherAgent._parse_assertion_values(content)
+            return "AssertionError", WatcherAgent._find_assert_source_line(content), actual, expected
+        if "TypeError" in content:
+            return "TypeError", None, None, None
+        return "Unknown", None, None, None
 
-                # Parse "assert X == Y" patterns from E-lines
-                assert_match = re.search(
-                    r"assert\s+([\d.eE+-]+)\s*==\s*([\d.eE+-]+)",
-                    section_content,
-                )
-                if assert_match:
-                    actual_value = assert_match.group(1)
-                    expected_value = assert_match.group(2)
+    @staticmethod
+    def _parse_assertion_values(content: str) -> tuple[str | None, str | None]:
+        """Extract (actual, expected) from ``assert X == Y`` or ``AssertionError: X != Y``."""
+        m = re.search(r"assert\s+([\d.eE+-]+)\s*==\s*([\d.eE+-]+)", content)
+        if m:
+            return m.group(1), m.group(2)
+        m = re.search(r"AssertionError:\s*([\d.eE+-]+)\s*!=\s*([\d.eE+-]+)", content)
+        if m:
+            return m.group(1), m.group(2)
+        return None, None
 
-                # Also try "AssertionError: X != Y" patterns
-                if actual_value is None:
-                    ae_match = re.search(
-                        r"AssertionError:\s*([\d.eE+-]+)\s*!=\s*([\d.eE+-]+)",
-                        section_content,
-                    )
-                    if ae_match:
-                        actual_value = ae_match.group(1)
-                        expected_value = ae_match.group(2)
+    @staticmethod
+    def _find_assert_source_line(content: str) -> str | None:
+        """Return the first ``> assert ...`` source line from a failure section."""
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith(">") and "assert" in stripped:
+                return stripped.lstrip("> ").strip()
+        return None
 
-                # Find the source assertion line
-                for sline in section_content.split("\n"):
-                    sline_s = sline.strip()
-                    if sline_s.startswith(">") and "assert" in sline_s:
-                        source_line = sline_s.lstrip("> ").strip()
-                        break
-            elif "TypeError" in section_content:
-                error_type = "TypeError"
+    @staticmethod
+    def _extract_traceback(content: str) -> str:
+        """Collect pytest ``E `` traceback lines from a failure section."""
+        return "\n".join(
+            line.strip()
+            for line in content.split("\n")
+            if line.strip().startswith("E ")
+        )
 
-            # Extract traceback (E-lines)
-            e_lines = [
-                line.strip()
-                for line in section_content.split("\n")
-                if line.strip().startswith("E ")
-            ]
-            traceback = "\n".join(e_lines)
+    @staticmethod
+    def _extract_local_variables(content: str) -> dict[str, str]:
+        """Parse pytest ``--showlocals`` output. Truncates reprs >80 chars, drops pytest internals."""
+        local_vars: dict[str, str] = {}
+        for m in re.finditer(r"^(\w[\w]*)\s{2,}= (.+)$", content, re.MULTILINE):
+            var_name = m.group(1)
+            if var_name.startswith("@py_") or var_name in _SKIP_LOCALS:
+                continue
+            var_value = m.group(2).strip()
+            if len(var_value) > 80:
+                var_value = var_value[:77] + "..."
+            local_vars[var_name] = var_value
+        return local_vars
 
-            # Extract local variables from --showlocals output
-            # Format: "varname    = value" (indented, after E-lines block)
-            local_vars: dict[str, str] = {}
-            _SKIP_LOCALS = {"self", "@py_builtins", "@py_assert", "request"}
-            for local_m in re.finditer(
-                r"^(\w[\w]*)\s{2,}= (.+)$",
-                section_content,
-                re.MULTILINE,
-            ):
-                var_name = local_m.group(1)
-                var_value = local_m.group(2).strip()
-                # Skip pytest internals and fixtures
-                if var_name.startswith("@py_") or var_name in _SKIP_LOCALS:
-                    continue
-                # Truncate large reprs
-                if len(var_value) > 80:
-                    var_value = var_value[:77] + "..."
-                local_vars[var_name] = var_value
+    @staticmethod
+    def _fallback_from_failed_names(
+        output: str, failed_tests: list[str],
+    ) -> list[TestError]:
+        """Build minimal TestErrors when section parsing found nothing."""
+        error_type = "Unknown"
+        if "NameError" in output:
+            error_type = "NameError"
+        elif "ImportError" in output:
+            error_type = "ImportError"
+        elif "AssertionError" in output:
+            error_type = "AssertionError"
+        return [
+            TestError(test_name=name, error_type=error_type, traceback="")
+            for name in failed_tests
+        ]
 
+    @staticmethod
+    def _fallback_from_collection_errors(output: str) -> list[TestError]:
+        """Handle pytest collection errors like ``ERROR collecting tests/test_foo.py``."""
+        errors: list[TestError] = []
+        for m in re.finditer(r"ERROR\s+(?:collecting\s+)?(\S+\.py)", output):
+            error_type, traceback_text = WatcherAgent._classify_collection_error(output)
             errors.append(TestError(
-                test_name=test_name,
+                test_name=m.group(1),
                 error_type=error_type,
-                actual_value=actual_value,
-                expected_value=expected_value,
-                traceback=traceback,
-                source_line=source_line,
-                local_variables=local_vars if local_vars else None,
+                traceback=traceback_text,
             ))
+        return errors
 
-        # Fallback: if section parsing found nothing, build from FAILED lines
-        if not errors and failed_tests:
-            for test_name in failed_tests:
-                error_type = "Unknown"
-                if "NameError" in output:
-                    error_type = "NameError"
-                elif "ImportError" in output:
-                    error_type = "ImportError"
-                elif "AssertionError" in output:
-                    error_type = "AssertionError"
-                errors.append(TestError(
-                    test_name=test_name,
-                    error_type=error_type,
-                    traceback="",
-                ))
-
-        # Fallback 2: handle pytest collection errors
-        # (e.g., "ERROR collecting tests/test_foo.py")
-        if not errors:
-            for m in re.finditer(
-                r"ERROR\s+(?:collecting\s+)?(\S+\.py)", output
-            ):
-                error_file = m.group(1)
-                error_type = "ImportError"
-                traceback_text = ""
-                if "ModuleNotFoundError" in output:
-                    mod_match = re.search(
-                        r"ModuleNotFoundError: No module named '(\w+)'", output
-                    )
-                    traceback_text = mod_match.group(0) if mod_match else ""
-                elif "ImportError" in output:
-                    imp_match = re.search(r"ImportError: (.+)", output)
-                    traceback_text = imp_match.group(0) if imp_match else ""
-                elif "SyntaxError" in output:
-                    error_type = "SyntaxError"
-                errors.append(TestError(
-                    test_name=error_file,
-                    error_type=error_type,
-                    traceback=traceback_text,
-                ))
-
-        return errors[:10]
+    @staticmethod
+    def _classify_collection_error(output: str) -> tuple[str, str]:
+        """Map collection-error cause to (error_type, traceback_text)."""
+        if "ModuleNotFoundError" in output:
+            m = re.search(r"ModuleNotFoundError: No module named '(\w+)'", output)
+            return "ImportError", m.group(0) if m else ""
+        if "ImportError" in output:
+            m = re.search(r"ImportError: (.+)", output)
+            return "ImportError", m.group(0) if m else ""
+        if "SyntaxError" in output:
+            return "SyntaxError", ""
+        return "ImportError", ""
 
     @staticmethod
     def extract_lesson(
