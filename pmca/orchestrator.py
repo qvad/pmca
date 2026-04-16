@@ -80,6 +80,34 @@ class _TriageContext:
     test_function: str
 
 
+# --- Task profile keyword sets (used by Orchestrator._estimate_task_profile) ---
+
+_DIFFICULTY_KEYWORDS: frozenset[str] = frozenset({
+    "sort", "filter", "recursive", "tree", "graph", "regex", "priority",
+})
+
+_REASONING_STATE_KEYWORDS: frozenset[str] = frozenset({
+    "status", "priority", "history", "overdue", "expire",
+})
+
+_REASONING_RETURN_FORMATS: frozenset[str] = frozenset({
+    "-> dict", "-> list", "-> bool", "-> int",
+    "returns list", "returns a list", "returns dict",
+    "tuple", "mapping",
+})
+
+_REASONING_ERROR_KEYWORDS: frozenset[str] = frozenset({
+    "raise valueerror", "raise keyerror", "raise typeerror",
+    "empty", "invalid", "not found", "does not exist",
+})
+
+_REASONING_DEPENDENCY_KEYWORDS: frozenset[str] = frozenset({
+    "depends on", "after calling", "updates the",
+    "affects", "filters", "case-insensitive",
+    "ascending", "descending",
+})
+
+
 class Orchestrator:
     """Controls the full cascade cycle: design → code → review → verify → integrate."""
 
@@ -623,57 +651,53 @@ class Orchestrator:
 
     @staticmethod
     def _estimate_task_profile(task: TaskNode) -> tuple[str, bool, int]:
-        """Estimate task difficulty and reasoning needs from spec (deterministic, zero LLM cost).
+        """Estimate task difficulty and reasoning needs from spec (zero LLM cost).
 
-        Returns:
-            (difficulty, reasoning_heavy, reasoning_signals)
-            - difficulty: "simple" or "complex"
-            - reasoning_heavy: True if task benefits from a reasoning model
-            - reasoning_signals: count of reasoning indicators found
+        Returns (difficulty, reasoning_heavy, reasoning_signals):
+          - difficulty: "simple" or "complex" (2+ indicators)
+          - reasoning_heavy: True when 3+ reasoning signals warrant a stronger model
+          - reasoning_signals: raw signal count (exposed for logging)
         """
-        # Use title if spec is not yet available (first design pass)
+        # Use title if spec is not yet available (first design pass).
         spec = (task.spec or task.title).lower()
 
-        # --- Difficulty indicators (existing logic) ---
-        indicators = 0
-        if spec.count("def ") + spec.count("class ") > 2:
-            indicators += 1
-        if "depends_on:" in spec and "none" not in spec.split("depends_on:")[1][:20]:
-            indicators += 1
-        if any(kw in spec for kw in ("sort", "filter", "recursive", "tree", "graph", "regex", "priority")):
-            indicators += 1
-        if len(spec) > 500:
-            indicators += 1
-        difficulty = "complex" if indicators >= 2 else "simple"
+        difficulty_count = Orchestrator._count_difficulty_indicators(spec)
+        difficulty = "complex" if difficulty_count >= 2 else "simple"
 
-        # --- Reasoning signals (new: route to stronger model) ---
-        reasoning_signals = 0
-        # 5+ methods: count "def " keywords and "-> type" return annotations
-        import re
-        method_count = max(spec.count("def "), len(re.findall(r"->\s*\w+", spec)))
-        if method_count >= 5:
-            reasoning_signals += 1
-        # State management keywords
-        if any(kw in spec for kw in ("status", "priority", "history", "overdue", "expire")):
-            reasoning_signals += 1
-        # Multiple return formats (match both "returns list" and "-> list/dict")
-        fmt_count = sum(1 for kw in ("-> dict", "-> list", "-> bool", "-> int",
-                                      "returns list", "returns a list", "returns dict",
-                                      "tuple", "mapping") if kw in spec)
-        if fmt_count >= 3:
-            reasoning_signals += 1
-        # Edge case / error handling language
-        if sum(1 for kw in ("raise valueerror", "raise keyerror", "raise typeerror",
-                             "empty", "invalid", "not found", "does not exist") if kw in spec) >= 2:
-            reasoning_signals += 1
-        # Cross-method dependencies or complex filtering
-        if any(kw in spec for kw in ("depends on", "after calling", "updates the",
-                                      "affects", "filters", "case-insensitive",
-                                      "ascending", "descending")):
-            reasoning_signals += 1
-
+        reasoning_signals = Orchestrator._count_reasoning_signals(spec)
         reasoning_heavy = reasoning_signals >= 3
         return difficulty, reasoning_heavy, reasoning_signals
+
+    @staticmethod
+    def _count_difficulty_indicators(spec: str) -> int:
+        """Count indicators that suggest the task is algorithmically complex."""
+        count = 0
+        if spec.count("def ") + spec.count("class ") > 2:
+            count += 1
+        if "depends_on:" in spec and "none" not in spec.split("depends_on:")[1][:20]:
+            count += 1
+        if any(kw in spec for kw in _DIFFICULTY_KEYWORDS):
+            count += 1
+        if len(spec) > 500:
+            count += 1
+        return count
+
+    @staticmethod
+    def _count_reasoning_signals(spec: str) -> int:
+        """Count signals suggesting the task benefits from a reasoning model."""
+        signals = 0
+        method_count = max(spec.count("def "), len(re.findall(r"->\s*\w+", spec)))
+        if method_count >= 5:
+            signals += 1
+        if any(kw in spec for kw in _REASONING_STATE_KEYWORDS):
+            signals += 1
+        if sum(1 for kw in _REASONING_RETURN_FORMATS if kw in spec) >= 3:
+            signals += 1
+        if sum(1 for kw in _REASONING_ERROR_KEYWORDS if kw in spec) >= 2:
+            signals += 1
+        if any(kw in spec for kw in _REASONING_DEPENDENCY_KEYWORDS):
+            signals += 1
+        return signals
 
     async def code_phase(self, task: TaskNode, think: bool | None = None) -> TaskNode:
         """Coder implements a leaf-level task.
