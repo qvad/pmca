@@ -28,6 +28,45 @@ def _build_pythonpath(workspace: Path) -> str:
         paths.append(str(src_dir))
     return os.pathsep.join(paths)
 
+
+# --- spec_coverage_check helpers ---
+
+# Names that may appear in specs as type hints / exceptions but are never
+# functions the task should implement.
+_SPEC_BUILTINS: frozenset[str] = frozenset({
+    # Python builtins / exceptions
+    "True", "False", "None", "Exception", "ValueError",
+    "TypeError", "KeyError", "IndexError", "AttributeError",
+    "NotImplementedError", "StopIteration", "RuntimeError",
+    "OSError", "IOError", "FileNotFoundError", "PermissionError",
+    # typing module
+    "Any", "Optional", "Union", "List", "Dict", "Set", "Tuple",
+    "Type", "Callable", "Sequence", "Mapping", "Iterable", "Iterator",
+    "Generator", "Coroutine", "ClassVar", "Final", "Literal",
+    "TypeVar", "Generic", "Protocol", "NamedTuple", "TypedDict",
+})
+
+# Common library names mentioned in tech constraints.
+_SPEC_LIB_NAMES: frozenset[str] = frozenset({
+    "pyyaml", "yaml", "json", "httpx", "asyncio", "math", "re",
+    "hashlib", "datetime", "os", "sys", "abc", "typing", "collections",
+    "dataclasses", "enum", "pytest", "ruff", "mypy", "semgrep",
+})
+
+# OOP descriptor suffixes/prefixes: "rows_self", "cols_other" come from spec
+# text like "result dimensions: (rows_self, cols_other)" — never function names.
+_OOP_SUFFIXES: tuple[str, ...] = ("_self", "_other", "_a", "_b", "_me")
+_OOP_PREFIXES: tuple[str, ...] = ("self_", "other_")
+
+# Multi-lang definition catcher for non-Python files (Go, JS/TS, etc.).
+# Matches: class/function/func/interface declarations, and methodName(...) {
+_MULTILANG_DEF_RE = re.compile(
+    r"(?:class|function|async function|export function|export class|"
+    r"const|func|interface)\s+(\w+)|"
+    r"(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>\[\]|]+\s*)?[{]",
+    re.MULTILINE,
+)
+
 # Common imports that LLMs forget — maps name → import statement
 _KNOWN_IMPORTS: dict[str, str] = {
     # typing
@@ -1348,109 +1387,80 @@ class WatcherAgent(BaseAgent):
         return blocking, informational
 
     async def spec_coverage_check(self, task: TaskNode) -> list[str]:
-        """Check that all functions/classes mentioned in spec exist in code.
+        """Return spec-mentioned functions/classes absent from the generated code.
 
-        Extracts expected names from the spec text (via regex) and verifies
-        they are defined in the generated code (via AST). Returns a list of
-        missing name strings. This is fully deterministic — no LLM calls.
+        Fully deterministic — no LLM calls. Pipeline:
+          1. _extract_expected_names_from_spec — 4 regex patterns over spec + title
+          2. _filter_expected_names — drop builtins, params, libs, OOP descriptors
+          3. _extract_defined_names_from_workspace — Python AST + multi-lang regex
+          4. diff → missing names
 
-        Only flags names that look like identifiers: contain an underscore
-        (snake_case function) or start with uppercase (PascalCase class).
-        Single lowercase words are almost always parameter/field names, not
-        functions the task should implement.
+        Only flags identifier-shaped names (snake_case or PascalCase); plain
+        lowercase words are treated as parameter/field names.
         """
         if not task.spec or not task.code_files or not self._workspace_path:
             return []
 
-        # --- Step 1: Extract expected names from spec ---
-        spec_lower = task.spec.lower()
-        expected_names: set[str] = set()
+        expected = self._extract_expected_names_from_spec(task)
+        if not expected:
+            return []
 
-        # Pattern: function/method names in common spec formats
-        # "implement filter_by_status" / "function filter_by_status"
-        for m in re.finditer(
-            r"(?:implement|function|method|def)\s+(\w+)", spec_lower
-        ):
-            name = m.group(1)
-            expected_names.add(name)
+        expected = self._filter_expected_names(expected, task)
+        if not expected:
+            return []
 
-        # Pattern: backtick-quoted names  `filter_by_status`
-        for m in re.finditer(r"`(\w+)`", task.spec):
-            name = m.group(1)
-            if name[0].isupper():
-                expected_names.add(name)
-            else:
-                expected_names.add(name.lower())
+        defined = self._extract_defined_names_from_workspace(task)
 
-        # Pattern: comma-separated function lists — run on ORIGINAL task title only,
-        # NOT on architect-generated spec. The architect spec introduces descriptive
-        # variable names (e.g. "field_value", "row_count") in prose that are not
-        # functions to implement. The original request explicitly names functions.
-        # "filter_by_status, filter_by_priority, sort_by_priority"
+        missing: list[str] = []
+        for name in sorted(expected):
+            if name.lower() not in defined and name not in defined:
+                missing.append(name)
+        return missing
+
+    @staticmethod
+    def _extract_expected_names_from_spec(task: TaskNode) -> set[str]:
+        """Collect candidate function/class names from the spec via 4 regex patterns."""
+        spec = task.spec
+        spec_lower = spec.lower()
         title_lower = task.title.lower() if task.title else spec_lower
+        expected: set[str] = set()
+
+        # (1) "implement X" / "function X" / "def X"
+        for m in re.finditer(r"(?:implement|function|method|def)\s+(\w+)", spec_lower):
+            expected.add(m.group(1))
+
+        # (2) backtick-quoted names — preserve case for PascalCase
+        for m in re.finditer(r"`(\w+)`", spec):
+            name = m.group(1)
+            expected.add(name if name[0].isupper() else name.lower())
+
+        # (3) comma-separated function lists — ONLY from task.title.
+        # Architect spec prose introduces descriptive variable names (e.g.
+        # "field_value", "row_count") that are not functions to implement.
         for m in re.finditer(
             r"(\w+(?:_\w+)+)(?:\s*,\s*(\w+(?:_\w+)+))+", title_lower
         ):
-            full_match = m.group(0)
-            for name in re.findall(r"\w+(?:_\w+)+", full_match):
-                expected_names.add(name)
+            for name in re.findall(r"\w+(?:_\w+)+", m.group(0)):
+                expected.add(name)
 
-        # Pattern: class names (PascalCase words with 2+ caps)
-        for m in re.finditer(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", task.spec):
-            expected_names.add(m.group(1))
+        # (4) PascalCase class names (2+ caps, case preserved)
+        for m in re.finditer(r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", spec):
+            expected.add(m.group(1))
 
-        if not expected_names:
-            return []
+        return expected
 
-        # --- Filter: only keep names that look like identifiers ---
-        # Snake_case (has underscore) → function/method name
-        # PascalCase (starts uppercase) → class name
-        # Plain lowercase words (board, name, status) are parameter/field names
-        # Also exclude Python builtins
-        _BUILTINS = {
-            # Python builtins / exceptions
-            "True", "False", "None", "Exception", "ValueError",
-            "TypeError", "KeyError", "IndexError", "AttributeError",
-            "NotImplementedError", "StopIteration", "RuntimeError",
-            "OSError", "IOError", "FileNotFoundError", "PermissionError",
-            # typing module — appear in specs as type hints, never as functions to implement
-            "Any", "Optional", "Union", "List", "Dict", "Set", "Tuple",
-            "Type", "Callable", "Sequence", "Mapping", "Iterable", "Iterator",
-            "Generator", "Coroutine", "ClassVar", "Final", "Literal",
-            "TypeVar", "Generic", "Protocol", "NamedTuple", "TypedDict",
-        }
+    @staticmethod
+    def _filter_expected_names(names: set[str], task: TaskNode) -> set[str]:
+        """Drop builtins, param names, libs, OOP descriptors. Keep only identifier-shaped names."""
+        param_names = WatcherAgent._extract_param_names_from_spec(task.spec)
 
-        # Exclude parameter names: names that appear inside parentheses
-        # e.g. "filter_by_priority(tasks, min_priority)" → min_priority is a param
-        param_names: set[str] = set()
-        for m in re.finditer(r"\w+\(([^)]+)\)", task.spec):
-            for param in m.group(1).split(","):
-                param = param.strip().lower()
-                # Strip type annotations like "tasks: list"
-                param = param.split(":")[0].strip()
-                param = param.split("=")[0].strip()
-                if param:
-                    param_names.add(param)
-
-        # OOP descriptor suffixes: "rows_self", "cols_other" come from spec text like
-        # "result dimensions: (rows_self, cols_other)" — never actual function names.
-        _OOP_SUFFIXES = ("_self", "_other", "_a", "_b", "_me")
-        _OOP_PREFIXES = ("self_", "other_")
-
-        # also exclude common library names mentioned in tech constraints
-        _LIB_NAMES = {
-            "pyyaml", "yaml", "json", "httpx", "asyncio", "math", "re",
-            "hashlib", "datetime", "os", "sys", "abc", "typing", "collections",
-            "dataclasses", "enum", "pytest", "ruff", "mypy", "semgrep",
-        }
-
-        filtered_names: set[str] = set()
-        for name in expected_names:
-            if name in _BUILTINS:
+        filtered: set[str] = set()
+        for name in names:
+            if name in _SPEC_BUILTINS:
                 continue
             if name.lower() in param_names:
                 continue
-            if name.lower() in _LIB_NAMES:
+            if name.lower() in _SPEC_LIB_NAMES:
                 continue
             nl = name.lower()
             if any(nl.endswith(s) for s in _OOP_SUFFIXES):
@@ -1458,63 +1468,68 @@ class WatcherAgent(BaseAgent):
             if any(nl.startswith(p) for p in _OOP_PREFIXES):
                 continue
             if "_" in name or (name[0].isupper() and len(name) > 1):
-                filtered_names.add(name)
-        expected_names = filtered_names
+                filtered.add(name)
+        return filtered
 
-        if not expected_names:
-            return []
+    @staticmethod
+    def _extract_param_names_from_spec(spec: str) -> set[str]:
+        """Collect names appearing as function parameters in the spec.
 
-        # --- Step 2: Extract defined names from ALL workspace files ---
+        Handles annotations and defaults: ``tasks: list = None`` → ``tasks``.
+        """
+        params: set[str] = set()
+        for m in re.finditer(r"\w+\(([^)]+)\)", spec):
+            for raw in m.group(1).split(","):
+                name = raw.strip().lower().split(":")[0].strip().split("=")[0].strip()
+                if name:
+                    params.add(name)
+        return params
+
+    def _extract_defined_names_from_workspace(self, task: TaskNode) -> set[str]:
+        """Walk workspace files for defined function/class/method names."""
         from pmca.utils.lang import detect_language, get_extension
         lang = detect_language(task)
         ext = get_extension(lang)
 
-        defined_names: set[str] = set()
         ws = Path(self._workspace_path)
-        scan_files = list(ws.rglob(f"*{ext}"))
-        # Exclude __pycache__ and .pmca dirs
-        scan_files = [f for f in scan_files
-                      if "__pycache__" not in str(f) and ".pmca" not in str(f)]
+        scan_files = [
+            f for f in ws.rglob(f"*{ext}")
+            if "__pycache__" not in str(f) and ".pmca" not in str(f)
+        ]
 
+        defined: set[str] = set()
         for file_path in scan_files:
             content = file_path.read_text(errors="ignore")
             if lang == "python":
-                try:
-                    tree = ast.parse(content)
-                except SyntaxError:
-                    continue
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        defined_names.add(node.name.lower())
-                    elif isinstance(node, ast.ClassDef):
-                        defined_names.add(node.name)
-                        for item in node.body:
-                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                                defined_names.add(item.name.lower())
+                self._collect_python_definitions(content, defined)
             else:
-                # Multi-language regex: catches classes, functions, and methods
-                # Matches: class X, function Y, func Z, export class A, interface B
-                # Also matches method definitions like: methodName(...) {
-                pattern = re.compile(
-                    r"(?:class|function|async function|export function|export class|"
-                    r"const|func|interface)\s+(\w+)|"
-                    r"(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>\[\]|]+\s*)?[{]",
-                    re.MULTILINE
-                )
-                for m in pattern.finditer(content):
-                    name = m.group(1) or m.group(2)
-                    if name:
-                        defined_names.add(name.lower())
-                        defined_names.add(name)  # Keep case for PascalCase check
+                self._collect_multilang_definitions(content, defined)
+        return defined
 
-        # --- Step 3: Find missing names ---
-        missing: list[str] = []
-        for name in sorted(expected_names):
-            name_lower = name.lower()
-            if name_lower not in defined_names and name not in defined_names:
-                missing.append(name)
+    @staticmethod
+    def _collect_python_definitions(content: str, defined: set[str]) -> None:
+        """Add Python function/class/method names to `defined` (case-folded)."""
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.add(node.name.lower())
+            elif isinstance(node, ast.ClassDef):
+                defined.add(node.name)  # case preserved for PascalCase match
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        defined.add(item.name.lower())
 
-        return missing
+    @staticmethod
+    def _collect_multilang_definitions(content: str, defined: set[str]) -> None:
+        """Add non-Python definitions (Go, JS/TS, etc.) via regex."""
+        for m in _MULTILANG_DEF_RE.finditer(content):
+            name = m.group(1) or m.group(2)
+            if name:
+                defined.add(name.lower())
+                defined.add(name)  # preserve case for PascalCase match
 
     async def run_tests(self, task: TaskNode) -> TestResult:
         """Execute tests for a task and report results (supports Python, Go, TS)."""
