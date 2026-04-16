@@ -829,13 +829,12 @@ class WatcherAgent(BaseAgent):
 
     @staticmethod
     def _guard_index_zero(source: str) -> tuple[str, int]:
-        """Add empty-collection guards before unguarded x[0] access.
+        """Add empty-collection guards before unguarded ``x[0]`` / ``x[-1]`` access.
 
-        Before: result = items[0]
-        After:  result = items[0] if items else None
+        Before: ``result = items[0]``
+        After:  ``result = items[0] if items else None``
 
-        Only guards simple Name[0] or Name[-1] patterns that aren't
-        already inside an if-guard.
+        Only guards Name[0|-1] patterns not already inside an if-guard.
 
         Returns (new_source, fixes_applied).
         """
@@ -845,89 +844,107 @@ class WatcherAgent(BaseAgent):
             return source, 0
 
         lines = source.splitlines()
-        fixes = 0
         replacements: list[tuple[int, str, str]] = []
 
-        # Walk each function to understand scope and existing guards
         for func_node in ast.walk(tree):
             if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
+            guarded_names = WatcherAgent._collect_guarded_names(func_node)
+            WatcherAgent._collect_index_guard_replacements(
+                func_node, lines, guarded_names, replacements,
+            )
 
-            # Collect names that have if-guards in this function
-            guarded_names: set[str] = set()
-            for child in ast.walk(func_node):
-                if isinstance(child, ast.If):
-                    test = child.test
-                    # if items: / if len(items): / if items is not None:
-                    if isinstance(test, ast.Name):
-                        guarded_names.add(test.id)
-                    elif isinstance(test, ast.Call) and isinstance(test.func, ast.Name):
-                        if test.func.id == "len" and test.args:
-                            if isinstance(test.args[0], ast.Name):
-                                guarded_names.add(test.args[0].id)
-                    elif isinstance(test, ast.Compare):
-                        if isinstance(test.left, ast.Name):
-                            guarded_names.add(test.left.id)
+        fixes = WatcherAgent._apply_line_replacements(lines, replacements)
+        if fixes == 0:
+            return source, 0
 
-            # Find unguarded x[0] or x[-1] accesses
-            for child in ast.walk(func_node):
-                if not isinstance(child, ast.Subscript):
-                    continue
-                if not isinstance(child.value, ast.Name):
-                    continue
-                # Check index is 0 or -1
-                slc = child.slice
-                is_zero = isinstance(slc, ast.Constant) and slc.value in (0, -1)
-                is_neg = (
-                    isinstance(slc, ast.UnaryOp)
-                    and isinstance(slc.op, ast.USub)
-                    and isinstance(slc.operand, ast.Constant)
-                    and slc.operand.value == 1
-                )
-                if not is_zero and not is_neg:
-                    continue
+        new_source = "\n".join(lines)
+        try:
+            ast.parse(new_source)
+        except SyntaxError:
+            return source, 0
+        return new_source, fixes
 
-                collection_name = child.value.id
-                if collection_name in guarded_names:
-                    continue
+    @staticmethod
+    def _collect_guarded_names(func_node: ast.AST) -> set[str]:
+        """Names that have an if-guard inside this function (heuristic)."""
+        guarded: set[str] = set()
+        for child in ast.walk(func_node):
+            if not isinstance(child, ast.If):
+                continue
+            test = child.test
+            if isinstance(test, ast.Name):
+                guarded.add(test.id)
+            elif (
+                isinstance(test, ast.Call)
+                and isinstance(test.func, ast.Name)
+                and test.func.id == "len"
+                and test.args
+                and isinstance(test.args[0], ast.Name)
+            ):
+                guarded.add(test.args[0].id)
+            elif isinstance(test, ast.Compare) and isinstance(test.left, ast.Name):
+                guarded.add(test.left.id)
+        return guarded
 
-                # Check this subscript is a standalone assignment value
-                # (not inside a larger expression already handled)
-                if not child.lineno or child.lineno > len(lines):
-                    continue
+    @staticmethod
+    def _collect_index_guard_replacements(
+        func_node: ast.AST,
+        lines: list[str],
+        guarded_names: set[str],
+        replacements: list[tuple[int, str, str]],
+    ) -> None:
+        """Scan subscripts; for each unguarded Name[0|-1], record a replacement."""
+        for child in ast.walk(func_node):
+            if not isinstance(child, ast.Subscript) or not isinstance(child.value, ast.Name):
+                continue
+            if not WatcherAgent._subscript_is_zero_or_last(child.slice):
+                continue
+            collection_name = child.value.id
+            if collection_name in guarded_names:
+                continue
+            if not child.lineno or child.lineno > len(lines):
+                continue
 
-                line_idx = child.lineno - 1
-                line = lines[line_idx]
+            line_idx = child.lineno - 1
+            line = lines[line_idx]
+            if " if " in line and " else " in line:
+                continue  # already a ternary
 
-                # Skip if line already has an `if` ternary
-                if " if " in line and " else " in line:
-                    continue
+            sub_src = ast.unparse(child)
+            if sub_src not in line:
+                continue
+            replacements.append(
+                (line_idx, sub_src, f"{sub_src} if {collection_name} else None")
+            )
+            guarded_names.add(collection_name)  # don't double-guard
 
-                # Build the guarded expression
-                sub_src = ast.unparse(child)
-                guarded_expr = f"{sub_src} if {collection_name} else None"
+    @staticmethod
+    def _subscript_is_zero_or_last(slc: ast.expr) -> bool:
+        """True when the subscript is ``[0]``, ``[-1]``, or ``[1]`` with negation."""
+        if isinstance(slc, ast.Constant) and slc.value in (0, -1):
+            return True
+        return (
+            isinstance(slc, ast.UnaryOp)
+            and isinstance(slc.op, ast.USub)
+            and isinstance(slc.operand, ast.Constant)
+            and slc.operand.value == 1
+        )
 
-                if sub_src in line:
-                    replacements.append((line_idx, sub_src, guarded_expr))
-                    guarded_names.add(collection_name)  # don't double-guard
-
-        # Apply replacements in reverse order
+    @staticmethod
+    def _apply_line_replacements(
+        lines: list[str], replacements: list[tuple[int, str, str]],
+    ) -> int:
+        """Apply (line_idx, old, new) replacements in reverse; one fix per line. Returns count."""
         seen_lines: set[int] = set()
+        fixes = 0
         for line_idx, old_text, new_text in sorted(replacements, reverse=True):
             if line_idx in seen_lines:
                 continue
             seen_lines.add(line_idx)
             lines[line_idx] = lines[line_idx].replace(old_text, new_text, 1)
             fixes += 1
-
-        if fixes > 0:
-            new_source = "\n".join(lines)
-            try:
-                ast.parse(new_source)
-            except SyntaxError:
-                return source, 0
-            return new_source, fixes
-        return source, 0
+        return fixes
 
     @staticmethod
     def _guard_missing_else_raise(source: str) -> tuple[str, int]:
