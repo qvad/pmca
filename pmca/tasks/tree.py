@@ -25,8 +25,8 @@ class TaskNode:
     task_type: TaskType = TaskType.ARCHITECTURE
     title: str = ""
     spec: str = ""
-    code_files: list[str] = field(default_factory=list)
-    test_files: list[str] = field(default_factory=list)
+    code_files: dict[str, str] = field(default_factory=dict)
+    test_files: dict[str, str] = field(default_factory=dict)
     children: list[str] = field(default_factory=list)
     review_history: list[ReviewResult] = field(default_factory=list)
     retry_count: int = 0
@@ -84,8 +84,8 @@ class TaskNode:
             task_type=TaskType(data.get("task_type", "architecture")),
             title=data.get("title", ""),
             spec=data.get("spec", ""),
-            code_files=data.get("code_files", []),
-            test_files=data.get("test_files", []),
+            code_files=data.get("code_files", {}),
+            test_files=data.get("test_files", {}),
             children=data.get("children", []),
             review_history=[
                 ReviewResult.from_dict(r) for r in data.get("review_history", [])

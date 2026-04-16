@@ -1,0 +1,33 @@
+# qwen3.5:9b pure (no thinking mode)
+
+models:
+  architect:
+    name: "qwen3.5:9b"
+    context_window: 4096
+    temperature: 0.3
+  coder:
+    name: "qwen3.5:9b"
+    context_window: 4096
+    temperature: 0.2
+  reviewer:
+    name: "qwen3.5:9b"
+    context_window: 4096
+    temperature: 0.1
+  watcher:
+    name: "qwen3.5:9b"
+    context_window: 4096
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

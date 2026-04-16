@@ -30,7 +30,7 @@ TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.DESIGNING},
     TaskStatus.DESIGNING: {TaskStatus.DECOMPOSED, TaskStatus.CODING, TaskStatus.FAILED},
     TaskStatus.DECOMPOSED: {TaskStatus.INTEGRATING, TaskStatus.FAILED},
-    TaskStatus.CODING: {TaskStatus.REVIEWING, TaskStatus.FAILED},
+    TaskStatus.CODING: {TaskStatus.REVIEWING, TaskStatus.VERIFIED, TaskStatus.FAILED},
     TaskStatus.REVIEWING: {TaskStatus.VERIFIED, TaskStatus.CODING, TaskStatus.FAILED},
     TaskStatus.INTEGRATING: {TaskStatus.VERIFIED, TaskStatus.DECOMPOSED, TaskStatus.FAILED},
     TaskStatus.VERIFIED: set(),
@@ -129,6 +129,24 @@ class FailureAnalysis:
             explanation=data.get("explanation", ""),
             suggested_fix_target=data.get("suggested_fix_target", "code"),
             specific_issues=data.get("specific_issues", []),
+        )
+
+
+@dataclass
+class LessonRecord:
+    """Distilled lesson from a failed fix attempt (session-only, no serialization)."""
+
+    attempt: int
+    error_types: list[str]        # ["AssertionError", "NameError"]
+    strategy: str                 # "fix_code" | "fix_tests" | "fresh_start"
+    summary: str                  # Abstract 1-2 sentence summary
+
+    def format_for_prompt(self) -> str:
+        """Format as a concise lesson for injection into fix prompts."""
+        types_str = ", ".join(self.error_types) if self.error_types else "unknown"
+        return (
+            f"- Attempt {self.attempt} ({self.strategy}): "
+            f"[{types_str}] {self.summary}"
         )
 
 

@@ -1,0 +1,31 @@
+models:
+  architect:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.3
+  coder:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.2
+  reviewer:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.1
+  watcher:
+    name: "deepseek-coder-v2:16b"
+    context_window: 4096
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

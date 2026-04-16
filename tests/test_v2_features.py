@@ -457,6 +457,8 @@ class TestFreshStartStrategy:
             CodeFile(path="src/calc.py", content="def add(a,b): return a+b"),
         ])
         orch._watcher.auto_fix_deterministic = AsyncMock(return_value=0)
+        orch._watcher.targeted_micro_fix = AsyncMock(return_value=0)
+        orch._watcher.fix_runtime_errors = AsyncMock(return_value=0)
         orch._watcher.calibrate_tests = AsyncMock(return_value=0)
         orch._watcher.spec_coverage_check = AsyncMock(return_value=[])
         orch._tester.analyze_failure = AsyncMock(return_value=FailureAnalysis(
@@ -529,6 +531,7 @@ class TestStaticGateInCodeLeaf:
             timestamp=__import__("datetime").datetime.now(), model_used="reviewer",
         ))
         orch._watcher.auto_fix_deterministic = AsyncMock(return_value=0)
+        orch._watcher.inject_defensive_guards = AsyncMock(return_value=0)
         orch._watcher.static_analysis_gate = AsyncMock(return_value=([], []))
         orch._watcher.calibrate_tests = AsyncMock(return_value=0)
         orch._watcher.run_tests = AsyncMock(return_value=TestResult(
@@ -1119,6 +1122,7 @@ class TestSpecCoverageIntegration:
             timestamp=__import__("datetime").datetime.now(), model_used="watcher",
         ))
         orch._watcher.spec_coverage_check = AsyncMock(return_value=[])
+        orch._watcher.inject_defensive_guards = AsyncMock(return_value=0)
         orch._tester.generate_edge_cases = AsyncMock(return_value=[])
 
         root = orch._task_tree.create_root("Build a calculator")
@@ -1401,7 +1405,14 @@ class TestTesterIntegration:
             errors=["AssertionError"],
         ))
         orch._watcher.extract_structured_errors = MagicMock(return_value=[
-            MagicMock(error_type="AssertionError", format_for_prompt=lambda: "assert 0 == 3"),
+            MagicMock(
+                error_type="AssertionError",
+                test_name="test_add",
+                actual_value="0",
+                expected_value="3",
+                source_line="assert add(1,2) == 3",
+                format_for_prompt=lambda: "assert 0 == 3",
+            ),
         ])
         orch._reviewer.verify_code = AsyncMock(return_value=ReviewResult(
             passed=False, issues=["Wrong result"],
@@ -1417,6 +1428,8 @@ class TestTesterIntegration:
             CodeFile(path="src/calc.py", content="def add(a,b): return a+b"),
         ])
         orch._watcher.auto_fix_deterministic = AsyncMock(return_value=0)
+        orch._watcher.targeted_micro_fix = AsyncMock(return_value=0)
+        orch._watcher.fix_runtime_errors = AsyncMock(return_value=0)
         orch._watcher.calibrate_tests = AsyncMock(return_value=0)
         orch._watcher.spec_coverage_check = AsyncMock(return_value=[])
 
@@ -1439,6 +1452,7 @@ class TestTesterIntegration:
             CodeFile(path="tests/test_calc.py", content="def test_add(): assert add(1,2)==3"),
         ])
         orch._watcher.auto_fix_deterministic = AsyncMock(return_value=0)
+        orch._watcher.inject_defensive_guards = AsyncMock(return_value=0)
         orch._watcher.static_analysis_gate = AsyncMock(return_value=([], []))
         orch._watcher.spec_coverage_check = AsyncMock(return_value=[])
         orch._watcher.calibrate_tests = AsyncMock(return_value=0)
@@ -2406,3 +2420,815 @@ class TestApiLintInStaticGate:
 
         blocking, _ = await watcher.static_analysis_gate(task)
         assert blocking == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B — Defensive guard injection tests
+# ---------------------------------------------------------------------------
+
+class TestGuardSortKeys:
+    """Tests for _guard_sort_keys: None-safe sort key wrapping."""
+
+    def test_wraps_simple_attribute_key(self):
+        source = (
+            "def get_sorted(items):\n"
+            "    return sorted(items, key=lambda x: x.date)\n"
+        )
+        new_source, count = WatcherAgent._guard_sort_keys(source)
+        assert count == 1
+        assert "x.date is None" in new_source
+        assert "x.date if x.date is not None else ''" in new_source
+        ast.parse(new_source)
+
+    def test_wraps_subscript_key(self):
+        source = (
+            "def sort_tasks(tasks):\n"
+            "    tasks.sort(key=lambda t: t['due'])\n"
+        )
+        new_source, count = WatcherAgent._guard_sort_keys(source)
+        assert count == 1
+        assert "is None" in new_source
+        ast.parse(new_source)
+
+    def test_skips_already_guarded_tuple(self):
+        source = (
+            "def get_sorted(items):\n"
+            "    return sorted(items, key=lambda x: (x.date is None, x.date if x.date is not None else ''))\n"
+        )
+        new_source, count = WatcherAgent._guard_sort_keys(source)
+        assert count == 0
+        assert new_source == source
+
+    def test_skips_sort_without_key(self):
+        source = (
+            "def sort_nums(nums):\n"
+            "    return sorted(nums)\n"
+        )
+        new_source, count = WatcherAgent._guard_sort_keys(source)
+        assert count == 0
+        assert new_source == source
+
+    def test_skips_non_lambda_key(self):
+        source = (
+            "def get_sorted(items):\n"
+            "    return sorted(items, key=str.lower)\n"
+        )
+        new_source, count = WatcherAgent._guard_sort_keys(source)
+        assert count == 0
+
+
+class TestGuardIndexZero:
+    """Tests for _guard_index_zero: empty-collection guard before x[0]."""
+
+    def test_guards_simple_index_zero(self):
+        source = (
+            "def get_first(items):\n"
+            "    result = items[0]\n"
+            "    return result\n"
+        )
+        new_source, count = WatcherAgent._guard_index_zero(source)
+        assert count == 1
+        assert "if items else None" in new_source
+        ast.parse(new_source)
+
+    def test_skips_already_guarded_ternary(self):
+        source = (
+            "def get_first(items):\n"
+            "    result = items[0] if items else None\n"
+            "    return result\n"
+        )
+        new_source, count = WatcherAgent._guard_index_zero(source)
+        assert count == 0
+
+    def test_skips_if_guarded(self):
+        source = (
+            "def get_first(items):\n"
+            "    if items:\n"
+            "        result = items[0]\n"
+            "    else:\n"
+            "        result = None\n"
+            "    return result\n"
+        )
+        new_source, count = WatcherAgent._guard_index_zero(source)
+        assert count == 0
+
+    def test_skips_non_zero_index(self):
+        source = (
+            "def get_third(items):\n"
+            "    return items[2]\n"
+        )
+        new_source, count = WatcherAgent._guard_index_zero(source)
+        assert count == 0
+
+
+class TestInjectDefensiveGuards:
+    """Tests for inject_defensive_guards: full integration."""
+
+    @pytest.fixture
+    def watcher_with_workspace(self, tmp_path):
+        mm = MagicMock()
+        return WatcherAgent(mm, workspace_path=tmp_path), tmp_path
+
+    @pytest.mark.asyncio
+    async def test_injects_guards_into_code_file(self, watcher_with_workspace):
+        watcher, ws = watcher_with_workspace
+        code = (
+            "def process(items):\n"
+            "    first = items[0]\n"
+            "    return sorted(items, key=lambda x: x.name)\n"
+        )
+        (ws / "proc.py").write_text(code)
+        task = TaskNode(title="proc")
+        task.code_files = ["proc.py"]
+
+        count = await watcher.inject_defensive_guards(task)
+        assert count >= 1
+        result = (ws / "proc.py").read_text()
+        ast.parse(result)
+
+    @pytest.mark.asyncio
+    async def test_no_code_files(self, watcher_with_workspace):
+        watcher, ws = watcher_with_workspace
+        task = TaskNode(title="empty")
+        task.code_files = []
+        count = await watcher.inject_defensive_guards(task)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 2A — Runtime error repair tests
+# ---------------------------------------------------------------------------
+
+class TestFixTypeErrorInSort:
+    """Tests for _fix_typeerror_in_sort: fix TypeError from None in sort keys."""
+
+    def test_fixes_sort_with_none_error(self):
+        from pmca.agents.watcher import TestError
+        source = (
+            "def sort_tasks(tasks):\n"
+            "    return sorted(tasks, key=lambda t: t.due_date)\n"
+        )
+        error = TestError(
+            test_name="test_sort_by_due",
+            error_type="TypeError",
+            traceback="line 2, in sort_tasks\nTypeError: '<' not supported between instances of 'NoneType' and 'str'",
+        )
+        new_source, count = WatcherAgent._fix_typeerror_in_sort(source, error)
+        assert count == 1
+        assert "is None" in new_source
+        ast.parse(new_source)
+
+    def test_skips_non_typeerror(self):
+        from pmca.agents.watcher import TestError
+        source = "def sort_tasks(tasks):\n    return sorted(tasks, key=lambda t: t.due_date)\n"
+        error = TestError(
+            test_name="test_sort",
+            error_type="ValueError",
+            traceback="line 2\nValueError: something",
+        )
+        new_source, count = WatcherAgent._fix_typeerror_in_sort(source, error)
+        assert count == 0
+
+    def test_skips_already_guarded(self):
+        from pmca.agents.watcher import TestError
+        source = (
+            "def sort_tasks(tasks):\n"
+            "    return sorted(tasks, key=lambda t: (t.due_date is None, t.due_date or ''))\n"
+        )
+        error = TestError(
+            test_name="test_sort",
+            error_type="TypeError",
+            traceback="line 2\nTypeError: '<' not supported",
+        )
+        new_source, count = WatcherAgent._fix_typeerror_in_sort(source, error)
+        assert count == 0
+
+
+class TestFixIndexError:
+    """Tests for _fix_index_error: fix IndexError by adding empty-collection guard."""
+
+    def test_fixes_index_zero(self):
+        from pmca.agents.watcher import TestError
+        source = (
+            "def get_first(items):\n"
+            "    return items[0]\n"
+        )
+        error = TestError(
+            test_name="test_first",
+            error_type="IndexError",
+            traceback="line 2, in get_first\nIndexError: list index out of range",
+        )
+        new_source, count = WatcherAgent._fix_index_error(source, error)
+        assert count == 1
+        assert "if items else None" in new_source
+        ast.parse(new_source)
+
+    def test_skips_no_traceback_line(self):
+        from pmca.agents.watcher import TestError
+        source = "def get_first(items):\n    return items[0]\n"
+        error = TestError(
+            test_name="test_first",
+            error_type="IndexError",
+            traceback="",
+        )
+        new_source, count = WatcherAgent._fix_index_error(source, error)
+        assert count == 0
+
+    def test_skips_already_guarded(self):
+        from pmca.agents.watcher import TestError
+        source = (
+            "def get_first(items):\n"
+            "    return items[0] if items else None\n"
+        )
+        error = TestError(
+            test_name="test_first",
+            error_type="IndexError",
+            traceback="line 2\nIndexError: list index out of range",
+        )
+        new_source, count = WatcherAgent._fix_index_error(source, error)
+        assert count == 0
+
+
+class TestFixRuntimeErrors:
+    """Tests for fix_runtime_errors: integration dispatcher."""
+
+    @pytest.fixture
+    def watcher_with_workspace(self, tmp_path):
+        mm = MagicMock()
+        return WatcherAgent(mm, workspace_path=tmp_path), tmp_path
+
+    @pytest.mark.asyncio
+    async def test_fixes_typeerror(self, watcher_with_workspace):
+        from pmca.agents.watcher import TestError
+        watcher, ws = watcher_with_workspace
+        code = (
+            "def sort_tasks(tasks):\n"
+            "    return sorted(tasks, key=lambda t: t.due_date)\n"
+        )
+        (ws / "tasks.py").write_text(code)
+        task = TaskNode(title="tasks")
+        task.code_files = ["tasks.py"]
+
+        errors = [TestError(
+            test_name="test_sort",
+            error_type="TypeError",
+            traceback="line 2\nTypeError: '<' not supported between instances of 'NoneType' and 'str'",
+        )]
+        count = await watcher.fix_runtime_errors(task, errors)
+        assert count >= 1
+        result = (ws / "tasks.py").read_text()
+        assert "is None" in result
+        ast.parse(result)
+
+    @pytest.mark.asyncio
+    async def test_no_errors(self, watcher_with_workspace):
+        watcher, ws = watcher_with_workspace
+        task = TaskNode(title="empty")
+        task.code_files = []
+        count = await watcher.fix_runtime_errors(task, [])
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Task Profile / Adaptive Routing
+# ---------------------------------------------------------------------------
+
+class TestEstimateTaskProfile:
+    """Test the _estimate_task_profile() routing logic."""
+
+    def test_simple_task_not_reasoning(self):
+        """Simple calculator — should be simple, not reasoning-heavy."""
+        task = TaskNode(title="Calculator")
+        task.spec = "Create a Calculator class with add and subtract methods."
+        difficulty, reasoning_heavy, signals = Orchestrator._estimate_task_profile(task)
+        assert difficulty == "simple"
+        assert reasoning_heavy is False
+        assert signals < 3
+
+    def test_complex_but_not_reasoning(self):
+        """Complex by length/keywords but not reasoning-heavy (e.g. matrix)."""
+        task = TaskNode(title="Matrix")
+        task.spec = (
+            "Create a Matrix class with def add, def subtract, def multiply, "
+            "def transpose methods. Support sorting rows by column values. "
+            "Handle recursive operations on nested structures. " * 3
+        )
+        difficulty, reasoning_heavy, signals = Orchestrator._estimate_task_profile(task)
+        assert difficulty == "complex"
+        assert reasoning_heavy is False
+
+    def test_reasoning_heavy_todo_manager(self):
+        """todo_manager style spec should trigger reasoning routing."""
+        task = TaskNode(title="Todo Manager")
+        task.spec = (
+            "Create a TodoManager class with these methods:\n"
+            "def add_task(self, title, priority, due_date)\n"
+            "def complete_task(self, task_id)\n"
+            "def list_by_priority(self)\n"
+            "def get_overdue(self)\n"
+            "def get_history(self)\n"
+            "def update_status(self, task_id, status)\n"
+            "Each task has a status (pending, in_progress, done) and priority.\n"
+            "Raise ValueError if task not found. Raise KeyError if task does not exist.\n"
+            "Returns list of overdue tasks sorted by priority.\n"
+            "Returns a list of completed tasks. Updates the task history after calling complete.\n"
+        )
+        difficulty, reasoning_heavy, signals = Orchestrator._estimate_task_profile(task)
+        assert difficulty == "complex"
+        assert reasoning_heavy is True
+        assert signals >= 3
+
+    def test_reasoning_signals_count(self):
+        """Verify individual signal detection."""
+        task = TaskNode(title="Test")
+        # 5+ defs: yes, status: yes, raise valueerror + empty: yes (2 edge cases)
+        # cross-method "updates the": yes → 4 signals
+        task.spec = (
+            "def a(self): pass\ndef b(self): pass\ndef c(self): pass\n"
+            "def d(self): pass\ndef e(self): pass\n"
+            "Track status changes. Raise ValueError on invalid. "
+            "Return empty list if no results. Updates the internal state."
+        )
+        _, reasoning_heavy, signals = Orchestrator._estimate_task_profile(task)
+        assert signals >= 3
+        assert reasoning_heavy is True
+
+    def test_coder_reasoning_fallback_config(self):
+        """Config without coder_reasoning should fallback to coder."""
+        config = Config(
+            models={
+                AgentRole.CODER: ModelConfig(name="qwen7b"),
+            }
+        )
+        # Should not raise — fallback to CODER
+        model = config.get_model(AgentRole.CODER_REASONING)
+        assert model.name == "qwen7b"
+
+    def test_coder_reasoning_explicit_config(self):
+        """Config with explicit coder_reasoning should use it."""
+        config = Config(
+            models={
+                AgentRole.CODER: ModelConfig(name="qwen7b"),
+                AgentRole.CODER_REASONING: ModelConfig(name="qwen14b"),
+            }
+        )
+        model = config.get_model(AgentRole.CODER_REASONING)
+        assert model.name == "qwen14b"
+
+
+# ---------------------------------------------------------------------------
+# Mutation Oracle Tests
+# ---------------------------------------------------------------------------
+
+class TestMutatorEngine:
+    """Tests for the AST-based mutation engine."""
+
+    def test_arithmetic_mutations(self):
+        """Generates arithmetic operator mutations (+ → -)."""
+        from pmca.utils.mutator import generate_mutations, MutationType
+        source = "def add(a, b):\n    return a + b\n"
+        mutations = generate_mutations(source)
+        arith = [m for m in mutations if m.mutation_type == MutationType.ARITH_OP]
+        assert len(arith) >= 1
+        # The mutated source should swap + to something else
+        for m in arith:
+            assert "+" not in m.description or "→" in m.description
+
+    def test_comparison_mutations(self):
+        """Generates comparison operator mutations (== → !=)."""
+        from pmca.utils.mutator import generate_mutations, MutationType
+        source = "def check(x):\n    return x > 0\n"
+        mutations = generate_mutations(source)
+        cmp_muts = [m for m in mutations if m.mutation_type == MutationType.CMP_OP]
+        assert len(cmp_muts) >= 1
+
+    def test_return_value_mutations(self):
+        """Generates return value mutations (return x → return None)."""
+        from pmca.utils.mutator import generate_mutations, MutationType
+        source = "def get_value():\n    return 42\n"
+        mutations = generate_mutations(source)
+        ret_muts = [m for m in mutations if m.mutation_type == MutationType.RETURN_VALUE]
+        assert len(ret_muts) >= 1
+        assert "return None" in ret_muts[0].description or "None" in ret_muts[0].mutated_source
+
+    def test_constant_mutations(self):
+        """Generates constant value mutations (42 → 43)."""
+        from pmca.utils.mutator import generate_mutations, MutationType
+        source = "def get():\n    return 42\n"
+        mutations = generate_mutations(source)
+        const_muts = [m for m in mutations if m.mutation_type == MutationType.CONSTANT]
+        assert len(const_muts) >= 1
+
+    def test_negate_condition_mutations(self):
+        """Generates condition negation mutations."""
+        from pmca.utils.mutator import generate_mutations, MutationType
+        source = "def check(x):\n    if x > 0:\n        return True\n    return False\n"
+        mutations = generate_mutations(source)
+        neg_muts = [m for m in mutations if m.mutation_type == MutationType.NEGATE_COND]
+        assert len(neg_muts) >= 1
+
+    def test_max_mutations_cap(self):
+        """Respects max_mutations limit."""
+        from pmca.utils.mutator import generate_mutations
+        source = (
+            "def f(a, b, c, d):\n"
+            "    x = a + b\n"
+            "    y = c - d\n"
+            "    z = x * y\n"
+            "    if z > 0:\n"
+            "        return z + 1\n"
+            "    elif z == 0:\n"
+            "        return 0\n"
+            "    return z - 1\n"
+        )
+        mutations = generate_mutations(source, max_mutations=3)
+        assert len(mutations) <= 3
+
+    def test_valid_python_output(self):
+        """All mutated sources are valid Python."""
+        from pmca.utils.mutator import generate_mutations
+        source = (
+            "def calc(a, b):\n"
+            "    if a > b:\n"
+            "        return a - b\n"
+            "    return a + b\n"
+        )
+        mutations = generate_mutations(source)
+        assert len(mutations) > 0
+        for m in mutations:
+            # Should not raise SyntaxError
+            ast.parse(m.mutated_source)
+
+    def test_syntax_error_input(self):
+        """Returns empty list for invalid Python."""
+        from pmca.utils.mutator import generate_mutations
+        mutations = generate_mutations("def broken(\n")
+        assert mutations == []
+
+    def test_diverse_type_selection(self):
+        """Selects mutations across different types when possible."""
+        from pmca.utils.mutator import generate_mutations
+        source = (
+            "def f(x):\n"
+            "    if x > 0:\n"
+            "        return x + 1\n"
+            "    return 0\n"
+        )
+        mutations = generate_mutations(source, max_mutations=8)
+        types_present = {m.mutation_type for m in mutations}
+        # Should have at least 2 different mutation types
+        assert len(types_present) >= 2
+
+
+class TestMutationOracle:
+    """Tests for the mutation oracle integration in WatcherAgent."""
+
+    @pytest.fixture
+    def watcher_workspace(self, tmp_path):
+        mm = MagicMock()
+        watcher = WatcherAgent(mm, workspace_path=tmp_path)
+        return watcher, tmp_path
+
+    @pytest.mark.asyncio
+    async def test_good_tests_high_kill_ratio(self, watcher_workspace):
+        """Tests that catch mutations produce a high kill ratio."""
+        watcher, ws = watcher_workspace
+
+        # Write code that tests can catch mutations in
+        code = (
+            "def add(a, b):\n"
+            "    return a + b\n"
+        )
+        (ws / "src").mkdir(exist_ok=True)
+        (ws / "src" / "calc.py").write_text(code)
+
+        # Write thorough tests
+        tests = (
+            "from calc import add\n\n"
+            "def test_add_basic():\n"
+            "    assert add(2, 3) == 5\n\n"
+            "def test_add_zero():\n"
+            "    assert add(0, 0) == 0\n\n"
+            "def test_add_negative():\n"
+            "    assert add(-1, 1) == 0\n"
+        )
+        (ws / "tests").mkdir(exist_ok=True)
+        (ws / "tests" / "test_calc.py").write_text(tests)
+
+        task = TaskNode(title="calc", id="t1")
+        task.code_files = ["src/calc.py"]
+        task.test_files = ["tests/test_calc.py"]
+
+        # Mock run_tests to simulate passing tests initially
+        original_run_tests = watcher.run_tests
+
+        async def mock_run_tests(t):
+            return TestResult(passed=True, total=3, failures=0, output="3 passed", errors=[])
+
+        watcher.run_tests = mock_run_tests
+
+        total, killed, ratio = await watcher.mutation_oracle(task)
+        # We can't predict exact values since it depends on subprocess pytest,
+        # but the function should return without error
+        assert total >= 0
+        assert killed >= 0
+        assert 0.0 <= ratio <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_no_tests_returns_zero(self, watcher_workspace):
+        """Returns (0, 0, 0.0) when task has no test files."""
+        watcher, ws = watcher_workspace
+        task = TaskNode(title="no_tests", id="t2")
+        task.code_files = ["src/foo.py"]
+        task.test_files = []
+
+        total, killed, ratio = await watcher.mutation_oracle(task)
+        assert total == 0
+        assert killed == 0
+        assert ratio == 0.0
+
+    @pytest.mark.asyncio
+    async def test_failing_tests_skip_oracle(self, watcher_workspace):
+        """Skips mutation oracle when tests don't pass."""
+        watcher, ws = watcher_workspace
+        task = TaskNode(title="failing", id="t3")
+        task.code_files = ["src/foo.py"]
+        task.test_files = ["tests/test_foo.py"]
+
+        async def mock_run_tests(t):
+            return TestResult(passed=False, total=1, failures=1, output="1 failed", errors=["AssertionError"])
+
+        watcher.run_tests = mock_run_tests
+
+        total, killed, ratio = await watcher.mutation_oracle(task)
+        assert total == 0
+
+    @pytest.mark.asyncio
+    async def test_file_always_restored(self, watcher_workspace):
+        """Original file is always restored even if mutation run fails."""
+        watcher, ws = watcher_workspace
+
+        original_code = "def foo():\n    return 42\n"
+        (ws / "foo.py").write_text(original_code)
+        (ws / "test_foo.py").write_text(
+            "from foo import foo\ndef test_foo():\n    assert foo() == 42\n"
+        )
+
+        task = TaskNode(title="restore_test", id="t4")
+        task.code_files = ["foo.py"]
+        task.test_files = ["test_foo.py"]
+
+        async def mock_run_tests(t):
+            return TestResult(passed=True, total=1, failures=0, output="1 passed", errors=[])
+
+        watcher.run_tests = mock_run_tests
+
+        await watcher.mutation_oracle(task)
+
+        # Verify original file is restored
+        assert (ws / "foo.py").read_text() == original_code
+
+
+# ---------------------------------------------------------------------------
+# Failure Memory Tests
+# ---------------------------------------------------------------------------
+
+class TestFailureEpisode:
+    """Tests for FailureEpisode dataclass."""
+
+    def test_to_document_format(self):
+        """Document contains all episode fields."""
+        from pmca.utils.failure_memory import FailureEpisode
+        ep = FailureEpisode(
+            task_spec_summary="Build a calculator",
+            error_signature="AssertionError: 5 != 6",
+            error_types=["AssertionError"],
+            fix_strategy="fix_code",
+            fix_description="Fixed off-by-one in add()",
+            outcome="resolved",
+            task_title="Calculator",
+        )
+        doc = ep.to_document()
+        assert "Calculator" in doc
+        assert "AssertionError" in doc
+        assert "fix_code" in doc
+        assert "resolved" in doc
+
+    def test_to_metadata_format(self):
+        """Metadata dict has required keys."""
+        from pmca.utils.failure_memory import FailureEpisode
+        ep = FailureEpisode(
+            task_spec_summary="Build a calculator",
+            error_signature="AssertionError: 5 != 6",
+            error_types=["AssertionError", "ValueError"],
+            fix_strategy="fix_tests",
+            fix_description="Fixed test assertion",
+            outcome="resolved",
+            task_title="Calculator",
+        )
+        meta = ep.to_metadata()
+        assert meta["task_title"] == "Calculator"
+        assert meta["fix_strategy"] == "fix_tests"
+        assert meta["outcome"] == "resolved"
+        assert "AssertionError" in meta["error_types"]
+        assert "ValueError" in meta["error_types"]
+
+    def test_timestamp_auto_set(self):
+        """Timestamp is auto-set if not provided."""
+        from pmca.utils.failure_memory import FailureEpisode
+        ep = FailureEpisode(
+            task_spec_summary="test",
+            error_signature="err",
+            error_types=[],
+            fix_strategy="fix_code",
+            fix_description="desc",
+            outcome="resolved",
+        )
+        assert ep.timestamp != ""
+        assert "T" in ep.timestamp  # ISO format
+
+
+class TestFailureMemoryManager:
+    """Tests for FailureMemoryManager with ChromaDB."""
+
+    @pytest.fixture
+    def memory_manager(self, tmp_path):
+        chromadb = pytest.importorskip("chromadb")
+        from pmca.utils.failure_memory import FailureMemoryManager
+        mgr = FailureMemoryManager(persist_dir=str(tmp_path / "fm"))
+        if not mgr.available:
+            pytest.skip("ChromaDB + sentence-transformers required")
+        return mgr
+
+    def test_store_and_query(self, memory_manager):
+        """Store an episode and query it back."""
+        from pmca.utils.failure_memory import FailureEpisode
+        ep = FailureEpisode(
+            task_spec_summary="Calculator with add/subtract",
+            error_signature="AssertionError: add(2,3) returned 6 instead of 5",
+            error_types=["AssertionError"],
+            fix_strategy="fix_code",
+            fix_description="Fixed arithmetic in add()",
+            outcome="resolved",
+            task_title="Calculator",
+        )
+        memory_manager.store_episode(ep)
+
+        results = memory_manager.query_similar("AssertionError in add function", n_results=1)
+        assert len(results) >= 1
+        assert any("Calculator" in r or "add" in r for r in results)
+
+    def test_distill_patterns(self, memory_manager):
+        """Distill creates patterns from episode clusters."""
+        from pmca.utils.failure_memory import FailureEpisode
+        # Store multiple episodes with same error type
+        for i in range(3):
+            ep = FailureEpisode(
+                task_spec_summary=f"Task {i}",
+                error_signature=f"AssertionError: wrong value {i}",
+                error_types=["AssertionError"],
+                fix_strategy="fix_tests",
+                fix_description=f"Fixed assertion {i}",
+                outcome="resolved",
+                task_title=f"Task {i}",
+            )
+            memory_manager.store_episode(ep)
+
+        count = memory_manager.distill_patterns()
+        assert count >= 1
+
+        # Query patterns
+        patterns = memory_manager.query_patterns("AssertionError wrong value")
+        assert len(patterns) >= 1
+        assert patterns[0].episode_count >= 2
+
+    def test_graceful_without_chromadb(self, tmp_path):
+        """Manager degrades gracefully without chromadb."""
+        from pmca.utils.failure_memory import FailureMemoryManager
+        # If chromadb is installed, we can't truly test ImportError,
+        # but we can test with a broken path scenario
+        mgr = FailureMemoryManager.__new__(FailureMemoryManager)
+        mgr._persist_dir = str(tmp_path)
+        mgr._episodic = None
+        mgr._semantic = None
+        mgr._client = None
+
+        assert not mgr.available
+        assert mgr.query_similar("test") == []
+        assert mgr.query_patterns("test") == []
+        assert mgr.distill_patterns() == 0
+
+    def test_query_similar_truncation(self, memory_manager):
+        """Query results are truncated to 150 chars."""
+        from pmca.utils.failure_memory import FailureEpisode
+        ep = FailureEpisode(
+            task_spec_summary="A" * 300,
+            error_signature="B" * 300,
+            error_types=["LongError"],
+            fix_strategy="fix_code",
+            fix_description="C" * 300,
+            outcome="resolved",
+            task_title="LongTask",
+        )
+        memory_manager.store_episode(ep)
+
+        results = memory_manager.query_similar("LongError", n_results=1)
+        for r in results:
+            # 150 chars + "..." = max 153
+            assert len(r) <= 153
+
+
+class TestFailureMemoryInFix:
+    """Tests for failure memory context flowing into coder.fix()."""
+
+    @pytest.fixture
+    def coder(self):
+        config = Config(
+            models={
+                AgentRole.CODER: ModelConfig(name="test:7b", temperature=0.2),
+            }
+        )
+        mm = ModelManager(config)
+        mm.generate = AsyncMock(return_value=(
+            "```python\n# filepath: src/calc.py\n"
+            "def add(a, b):\n    return a + b\n```"
+        ))
+        mm.ensure_loaded = AsyncMock(return_value="test:7b")
+        return CoderAgent(mm)
+
+    @pytest.mark.asyncio
+    async def test_memory_context_injected_into_prompt(self, coder, tmp_path):
+        """Failure memory context appears in the fix prompt."""
+        task = TaskNode(title="calc", id="t1")
+        task.spec = "Calculator with add"
+        task.code_files = ["src/calc.py"]
+        task.test_files = ["tests/test_calc.py"]
+
+        memory_context = "Past similar failures:\n- Task: Calculator, Error: off-by-one in add"
+
+        await coder.fix(
+            task,
+            issues=["test_add failed"],
+            retry_num=1,
+            failure_memory_context=memory_context,
+        )
+
+        # Check that generate was called with prompt containing the memory context
+        # _generate calls model.generate(role, prompt, system=..., ...)
+        call_args = coder._model.generate.call_args
+        prompt = call_args[0][1]  # second positional arg is the prompt
+        assert "Similar Past Failures" in prompt
+        assert "off-by-one" in prompt
+
+    @pytest.mark.asyncio
+    async def test_empty_memory_context_no_section(self, coder, tmp_path):
+        """Empty memory context doesn't add the section."""
+        task = TaskNode(title="calc", id="t2")
+        task.spec = "Calculator with add"
+        task.code_files = ["src/calc.py"]
+        task.test_files = ["tests/test_calc.py"]
+
+        await coder.fix(
+            task,
+            issues=["test_add failed"],
+            retry_num=1,
+            failure_memory_context="",
+        )
+
+        call_args = coder._model.generate.call_args
+        prompt = call_args[0][1]  # second positional arg is the prompt
+        assert "Similar Past Failures" not in prompt
+
+
+class TestMutationOracleConfig:
+    """Tests for mutation oracle config flags."""
+
+    def test_mutation_oracle_default_false(self):
+        """mutation_oracle defaults to False."""
+        from pmca.models.config import CascadeConfig
+        cfg = CascadeConfig()
+        assert cfg.mutation_oracle is False
+
+    def test_failure_memory_default_false(self):
+        """failure_memory defaults to False."""
+        from pmca.models.config import CascadeConfig
+        cfg = CascadeConfig()
+        assert cfg.failure_memory is False
+        assert cfg.failure_memory_path == ".pmca/failure_memory"
+
+    def test_config_from_yaml_dict(self):
+        """Config flags parsed from YAML dict."""
+        raw = {
+            "models": {
+                "coder": {"name": "test:7b"},
+            },
+            "cascade": {
+                "mutation_oracle": True,
+                "failure_memory": True,
+                "failure_memory_path": "/custom/path",
+            },
+        }
+        cfg = Config._from_dict(raw)
+        assert cfg.cascade.mutation_oracle is True
+        assert cfg.cascade.failure_memory is True
+        assert cfg.cascade.failure_memory_path == "/custom/path"

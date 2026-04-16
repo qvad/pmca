@@ -1,0 +1,19 @@
+rules:
+  - id: broad-exception-catch
+    patterns:
+      - pattern: |
+          except Exception:
+              ...
+      - pattern-not-inside: |
+          if __name__ == "__main__":
+              ...
+      - pattern-not-inside: |
+          def main(...):
+              ...
+    fix: |
+      except (ValueError, TypeError, KeyError):
+          ...
+    message: >-
+      Broad `except Exception` hides bugs. Narrow to specific exception types.
+    languages: [python]
+    severity: WARNING

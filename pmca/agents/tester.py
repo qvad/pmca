@@ -19,6 +19,14 @@ class TesterAgent(BaseAgent):
         super().__init__(model_manager)
         self._project_mode = project_mode
 
+    def _get_system_prompt(self) -> str:
+        """Construct system prompt with Tester SOP."""
+        system = prompts.SYSTEM_PROMPT
+        from pmca.prompts import TESTER_SOP
+        if TESTER_SOP not in system:
+            system += "\n" + TESTER_SOP
+        return system
+
     async def generate_tests(self, task: TaskNode, context: str = "") -> list[CodeFile]:
         """Design tests from specification using the 14B model."""
         safe_name = self._derive_short_name(task.title)
@@ -28,7 +36,8 @@ class TesterAgent(BaseAgent):
             suggested_module=safe_name,
             suggested_test_path=f"tests/test_{safe_name}.py",
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system)
         return self._parse_code_blocks(response)
 
     async def analyze_failure(
@@ -45,7 +54,8 @@ class TesterAgent(BaseAgent):
             tests=tests_content,
             test_output=test_output,
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system)
         return self._parse_failure_analysis(response)
 
     async def generate_edge_cases(
@@ -62,7 +72,8 @@ class TesterAgent(BaseAgent):
             existing_tests=existing_tests,
             test_path=f"tests/test_{safe_name}_edge.py",
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system)
         return self._parse_code_blocks(response)
 
     def _parse_failure_analysis(self, response: str) -> FailureAnalysis:

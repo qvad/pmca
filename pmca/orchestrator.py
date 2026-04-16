@@ -18,7 +18,7 @@ from pmca.agents.watcher import WatcherAgent
 from pmca.api.events import CascadeEvent, EventType
 from pmca.models.config import AgentRole, Config
 from pmca.models.manager import ModelManager
-from pmca.tasks.state import ReviewResult, TaskStatus, TaskType
+from pmca.tasks.state import LessonRecord, ReviewResult, TaskStatus, TaskType
 from pmca.tasks.tree import TaskNode, TaskTree
 from pmca.utils.assembler import FileAssembler, parse_target_file
 from pmca.utils.context import ContextManager
@@ -46,6 +46,12 @@ class Orchestrator:
         self._config = config
         self._workspace_path = workspace_path
         self._event_callback = event_callback
+        self._apply_strategy_profiles(workspace_path)
+
+        # Core state initialization
+        self._task_file = workspace_path / ".pmca" / "tasks.json"
+        self._snippet_store: dict[str, str] = {}
+        self._gate_stats: dict[str, int] = defaultdict(int)
 
         # Project mode: enabled when max_depth > 1
         self._project_mode = config.cascade.max_depth > 1
@@ -81,28 +87,72 @@ class Orchestrator:
             self._model_manager,
             workspace_path,
             lint_config=config.lint,
+            cascade_config=config.cascade,
         )
+
+        # Failure memory (optional — only if configured and deps installed)
+        self._failure_memory = None
+        if config.cascade.failure_memory:
+            try:
+                from pmca.utils.failure_memory import FailureMemoryManager
+                mem_path = Path(workspace_path) / config.cascade.failure_memory_path
+                self._failure_memory = FailureMemoryManager(persist_dir=str(mem_path))
+                if not self._failure_memory.available:
+                    self._failure_memory = None
+            except Exception as exc:
+                log.warning(f"Failure memory initialization failed: {exc}")
 
         # Tester agent: optional, uses 14B model for better test quality
         self._tester = None
         if AgentRole.TESTER in config.models:
             self._tester = TesterAgent(self._model_manager, project_mode=self._project_mode)
 
-        self._task_file = workspace_path / ".pmca" / "tasks.json"
+    def _apply_strategy_profiles(self, workspace_path: Path) -> None:
+        """Apply Best Known Configurations (BKC) based on active models."""
+        from pmca.models.profiles import get_profile_for_model
+        
+        # Check coder model as the primary driver of strategy
+        coder_cfg = self._config.models.get(AgentRole.CODER)
+        if not coder_cfg:
+            self._think_architect_hint = False
+            self._think_coder_hint = False
+            return
 
-        # Snippet store: {task_id:filepath -> code} for multi-file assembly
-        self._snippet_store: dict[str, str] = {}
+        profile = get_profile_for_model(coder_cfg.name)
+        if profile:
+            log.info(f"Applying Strategy Profile: {profile.name} to orchestrator")
+            # Override cascade defaults if not explicitly set in YAML
+            cascade = self._config.cascade
+            cascade.use_llm_reviewer = profile.use_llm_reviewer
+            cascade.reviewer_bypass_on_pass = profile.reviewer_bypass_on_pass
+            # Technique flags from profile
+            cascade.import_fixes = profile.import_fixes
+            cascade.ast_fixes = profile.ast_fixes
+            cascade.test_calibration = profile.test_calibration
+            cascade.micro_fix = profile.micro_fix
+            cascade.lesson_injection = profile.lesson_injection
+            cascade.spec_literals = profile.spec_literals
+            cascade.test_triage = profile.test_triage
+            cascade.runtime_fixes = profile.runtime_fixes
+            cascade.defensive_guards = profile.defensive_guards
+            # Set adaptive thinking hints based on profile
+            self._think_architect_hint = profile.think_architect
+            self._think_coder_hint = profile.think_coder
 
-        # Gate telemetry: track which deterministic gates catch issues
-        self._gate_stats: dict[str, int] = defaultdict(int)
+            if profile.best_of_n > 1:
+                cascade.best_of_n = profile.best_of_n
+        else:
+            self._think_architect_hint = False
+            self._think_coder_hint = False
 
     def _emit(self, event: CascadeEvent) -> None:
         """Send an event to the callback if one is registered."""
         if self._event_callback is not None:
             self._event_callback(event)
 
-    async def run(self, user_request: str) -> TaskNode:
+    async def run(self, user_request: str, think: bool | None = None) -> TaskNode:
         """Main entry point. Takes user request, returns completed task tree root."""
+        self._think_override = think
         console.print(
             Panel(f"[bold]PMCA[/bold] — Processing: {user_request}", style="cyan")
         )
@@ -157,6 +207,9 @@ class Orchestrator:
                     task_id=root.id,
                     message=f"Cascade ended with status: {result.status.value}",
                 ))
+            # Collect filename normalization counts from agents
+            if self._coder.filename_normalizations > 0:
+                self._gate_stats["filename_norm"] += self._coder.filename_normalizations
             # Log gate telemetry summary
             if self._gate_stats:
                 stats_str = ", ".join(
@@ -285,14 +338,20 @@ class Orchestrator:
             message=f"Designing: {task.title}",
         ))
 
+        # Targeted Thinking Strategy: architect uses think=True only for complex tasks
+        difficulty, reasoning_heavy, signals = self._estimate_task_profile(task)
+        think_mode = reasoning_heavy or self._think_architect_hint
+        if think_mode:
+            log.info(f"Task '{task.title}' flagged reasoning_heavy or profile_hint → triggering architect thinking")
+
         # Generate spec
         context = self._context_manager.build_context(task)
-        spec = await self._architect.generate_spec(task, context)
+        spec = await self._architect.generate_spec(task, context, think=think_mode)
         task.spec = spec
         log.info(f"Generated spec ({len(spec)} chars) for '{task.title}'")
 
         # Try to decompose
-        subtasks = await self._architect.decompose(task)
+        subtasks = await self._architect.decompose(task, think=think_mode)
 
         if subtasks:
             log.info(f"Decomposing '{task.title}' into {len(subtasks)} subtasks")
@@ -320,7 +379,7 @@ class Orchestrator:
             # Skip in project mode — the decomposition prompt already produces
             # well-structured specs and the 7B reviewer is unreliable here
             if not self._project_mode:
-                await self._review_child_specs(task)
+                await self._review_child_specs(task, think=think_mode)
         else:
             # Leaf — move directly to coding
             log.info(f"Task '{task.title}' is a leaf, proceeding to code")
@@ -336,7 +395,7 @@ class Orchestrator:
         self._save_state()
         return task
 
-    async def _review_child_specs(self, parent: TaskNode) -> None:
+    async def _review_child_specs(self, parent: TaskNode, think: bool | None = None) -> None:
         """Review each child's spec against parent spec."""
         children = self._task_tree.get_children(parent.id)
         for child in children:
@@ -348,7 +407,7 @@ class Orchestrator:
                 # Retry with feedback
                 for retry in range(self._config.cascade.max_retries):
                     child.retry_count += 1
-                    refined = await self._architect.refine_spec(child, review)
+                    refined = await self._architect.refine_spec(child, review, think=think)
                     child.spec = refined
                     review = await self._reviewer.verify_spec(child.spec, parent.spec)
                     child.review_history.append(review)
@@ -363,7 +422,10 @@ class Orchestrator:
 
     async def _code_leaf(self, task: TaskNode) -> TaskNode:
         """Code and verify a leaf task."""
-        task = await self.code_phase(task)
+        difficulty, reasoning_heavy, signals = self._estimate_task_profile(task)
+        think_mode = reasoning_heavy or self._think_coder_hint
+        
+        task = await self.code_phase(task, think=think_mode)
         if task.is_failed:
             return task
 
@@ -375,6 +437,13 @@ class Orchestrator:
             # Sync snippet store with fixed files so assembly uses corrected code
             if self._project_mode:
                 self._refresh_snippets(task)
+
+        # Preventive AST guards — disabled by default (empirically harmful on 7B).
+        if self._config.cascade.defensive_guards:
+            guards = await self._watcher.inject_defensive_guards(task)
+            if guards > 0:
+                log.info(f"Injected {guards} defensive guard(s)")
+                self._gate_stats["defensive_guards"] = self._gate_stats.get("defensive_guards", 0) + guards
 
         # Static analysis gate — catch syntax errors before wasting LLM tokens
         blocking_errors, lint_info = await self._watcher.static_analysis_gate(task)
@@ -404,17 +473,33 @@ class Orchestrator:
             task._missing_spec_names = missing_names
 
         # Calibrate test assertions — fix LLM arithmetic errors in tests
-        calibrated = await self._watcher.calibrate_tests(task)
-        if calibrated > 0:
-            log.info(f"Calibrated {calibrated} test assertion(s)")
-            self._gate_stats["calibrations"] += calibrated
+        if self._config.cascade.test_calibration:
+            calibrated = await self._watcher.calibrate_tests(task)
+            if calibrated > 0:
+                log.info(f"Calibrated {calibrated} test assertion(s)")
+                self._gate_stats["calibrations"] += calibrated
 
-        # Oracle repair — aggressive second pass for remaining mismatches
-        oracle_repaired = await self._watcher.oracle_repair_tests(task)
-        if oracle_repaired > 0:
-            log.info(f"Oracle-repaired {oracle_repaired} test assertion(s)")
-            self._gate_stats["oracle_repairs"] += oracle_repaired
+            # Oracle repair — aggressive second pass for remaining mismatches
+            oracle_repaired = await self._watcher.oracle_repair_tests(task)
+            if oracle_repaired > 0:
+                log.info(f"Oracle-repaired {oracle_repaired} test assertion(s)")
+                self._gate_stats["oracle_repairs"] += oracle_repaired
 
+        # Mutation oracle — validate test quality via AST mutations
+        if self._config.cascade.mutation_oracle:
+            total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
+            if total > 0:
+                self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
+                self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
+                if kill_ratio < 0.5:
+                    warning = (
+                        f"Mutation oracle: only {killed}/{total} mutants killed "
+                        f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
+                    )
+                    log.warning(warning)
+                    task._mutation_oracle_warning = warning
+
+        # 2. Review phase (LLM-based logic and style check)
         task = await self.review_phase(task)
 
         # After verification, generate edge case tests (informational, not blocking)
@@ -443,59 +528,83 @@ class Orchestrator:
         return task
 
     def _refresh_snippets(self, task: TaskNode) -> None:
-        """Re-read code files from disk into the snippet store.
-
-        Called after auto_fix_deterministic modifies files in-place so
-        that the FileAssembler uses the corrected code, not the original.
-        """
+        """Re-read code files from disk into the snippet store and task node."""
         for path in task.code_files:
-            key = f"{task.id}:{path}"
-            if key in self._snippet_store:
-                try:
-                    self._snippet_store[key] = self._file_manager.read_file(path)
-                except FileNotFoundError:
-                    pass
+            try:
+                content = self._file_manager.read_file(path)
+                task.code_files[path] = content
+                if self._project_mode:
+                    key = f"{task.id}:{path}"
+                    self._snippet_store[key] = content
+            except FileNotFoundError:
+                pass
 
     def _extract_and_attach_interface(self, task: TaskNode) -> None:
         """Extract AST interface from code files and append to task spec."""
         interfaces: list[str] = []
-        for path in task.code_files:
-            try:
-                code = self._file_manager.read_file(path)
-                iface = ArchitectAgent.extract_interface_from_code(code, path)
-                if iface:
-                    interfaces.append(f"# {path}\n{iface}")
-            except FileNotFoundError:
-                pass
+        for path, content in task.code_files.items():
+            iface = ArchitectAgent.extract_interface_from_code(content, path)
+            if iface:
+                interfaces.append(f"# {path}\n{iface}")
         if interfaces:
             task.spec += f"\n[INTERFACE]\n" + "\n".join(interfaces)
             log.info(f"Attached interface to '{task.title}'")
 
     @staticmethod
-    def _estimate_difficulty(task: TaskNode) -> str:
-        """Estimate task difficulty from spec metadata (deterministic, zero LLM cost).
+    def _estimate_task_profile(task: TaskNode) -> tuple[str, bool, int]:
+        """Estimate task difficulty and reasoning needs from spec (deterministic, zero LLM cost).
 
-        Returns "simple" or "complex". Simple tasks skip the planning section
-        in the coder prompt (research shows 7B models degrade under unnecessary
-        reasoning — "overthinking").
+        Returns:
+            (difficulty, reasoning_heavy, reasoning_signals)
+            - difficulty: "simple" or "complex"
+            - reasoning_heavy: True if task benefits from a reasoning model
+            - reasoning_signals: count of reasoning indicators found
         """
-        spec = task.spec.lower()
+        # Use title if spec is not yet available (first design pass)
+        spec = (task.spec or task.title).lower()
+
+        # --- Difficulty indicators (existing logic) ---
         indicators = 0
-        # Multiple functions/classes suggest complexity
         if spec.count("def ") + spec.count("class ") > 2:
             indicators += 1
-        # Has cross-file dependencies
         if "depends_on:" in spec and "none" not in spec.split("depends_on:")[1][:20]:
             indicators += 1
-        # Algorithmic keywords
         if any(kw in spec for kw in ("sort", "filter", "recursive", "tree", "graph", "regex", "priority")):
             indicators += 1
-        # Long spec suggests complexity
         if len(spec) > 500:
             indicators += 1
-        return "complex" if indicators >= 2 else "simple"
+        difficulty = "complex" if indicators >= 2 else "simple"
 
-    async def code_phase(self, task: TaskNode) -> TaskNode:
+        # --- Reasoning signals (new: route to stronger model) ---
+        reasoning_signals = 0
+        # 5+ methods: count "def " keywords and "-> type" return annotations
+        import re
+        method_count = max(spec.count("def "), len(re.findall(r"->\s*\w+", spec)))
+        if method_count >= 5:
+            reasoning_signals += 1
+        # State management keywords
+        if any(kw in spec for kw in ("status", "priority", "history", "overdue", "expire")):
+            reasoning_signals += 1
+        # Multiple return formats (match both "returns list" and "-> list/dict")
+        fmt_count = sum(1 for kw in ("-> dict", "-> list", "-> bool", "-> int",
+                                      "returns list", "returns a list", "returns dict",
+                                      "tuple", "mapping") if kw in spec)
+        if fmt_count >= 3:
+            reasoning_signals += 1
+        # Edge case / error handling language
+        if sum(1 for kw in ("raise valueerror", "raise keyerror", "raise typeerror",
+                             "empty", "invalid", "not found", "does not exist") if kw in spec) >= 2:
+            reasoning_signals += 1
+        # Cross-method dependencies or complex filtering
+        if any(kw in spec for kw in ("depends on", "after calling", "updates the",
+                                      "affects", "filters", "case-insensitive",
+                                      "ascending", "descending")):
+            reasoning_signals += 1
+
+        reasoning_heavy = reasoning_signals >= 3
+        return difficulty, reasoning_heavy, reasoning_signals
+
+    async def code_phase(self, task: TaskNode, think: bool | None = None) -> TaskNode:
         """Coder implements a leaf-level task."""
         log.info(f"[green]CODE[/green] phase for: {task.title}")
 
@@ -518,8 +627,18 @@ class Orchestrator:
         context = self._context_manager.build_context(task)
         test_first = self._config.cascade.test_first
         best_of_n = self._config.cascade.best_of_n
-        difficulty = self._estimate_difficulty(task)
-        log.info(f"Task difficulty: {difficulty}")
+        difficulty, reasoning_heavy, reasoning_signals = self._estimate_task_profile(task)
+
+        # Adaptive routing: select reasoning model for complex reasoning tasks
+        coder_role: AgentRole | None = None
+        if reasoning_heavy and AgentRole.CODER_REASONING in self._config.models:
+            coder_role = AgentRole.CODER_REASONING
+            log.info(f"Task difficulty: {difficulty}, reasoning_heavy=True ({reasoning_signals} signals) → routing to coder_reasoning")
+        else:
+            log.info(f"Task difficulty: {difficulty}, reasoning_signals={reasoning_signals} → using default coder")
+        # Store for use during fix retries
+        task._coder_role_override = coder_role
+        task._think_override = think
 
         # --- Test-first: generate tests from spec, then implement against them ---
         tests_content = ""
@@ -565,7 +684,7 @@ class Orchestrator:
 
             for cf in test_files:
                 self._file_manager.write_file(cf.path, cf.content)
-                task.test_files.append(cf.path)
+                task.test_files[cf.path] = cf.content
             log.info(f"Generated {len(test_files)} test file(s)")
 
         # --- Best-of-N or single generation ---
@@ -589,6 +708,7 @@ class Orchestrator:
             code_files = await self._coder.implement_best_of_n(
                 task, context, best_of_n, _test_runner,
                 tests_content=tests_content,
+                cross_execution=self._config.cascade.cross_execution,
             )
 
             # Clean up orphan files from losing candidates
@@ -603,15 +723,14 @@ class Orchestrator:
                 task, context, tests_content,
             )
         else:
-            code_files = await self._coder.implement(task, context, difficulty=difficulty)
+            code_files = await self._coder.implement(task, context, difficulty=difficulty, role_override=coder_role, think=think, spec_literals=self._config.cascade.spec_literals)
 
         for cf in code_files:
             self._file_manager.write_file(cf.path, cf.content)
             if cf.path.startswith("test") or "/test_" in cf.path:
-                if cf.path not in task.test_files:
-                    task.test_files.append(cf.path)
+                task.test_files[cf.path] = cf.content
             else:
-                task.code_files.append(cf.path)
+                task.code_files[cf.path] = cf.content
                 # Store snippet for multi-file assembly
                 if self._project_mode:
                     key = f"{task.id}:{cf.path}"
@@ -657,7 +776,13 @@ class Orchestrator:
         # Gather code content
         code_content = self._gather_code(task)
 
+        # Track lessons from failed attempts for injection into fix prompts
+        lesson_records: list[LessonRecord] = []
+
         for attempt in range(self._config.cascade.max_retries + 1):
+            # Reset per-iteration state
+            structured_errors: list = []
+
             # --- Pre-review smoke test ---
             # Run tests BEFORE calling the reviewer LLM. If tests crash on
             # import/syntax errors, skip review entirely and go straight to fix.
@@ -684,7 +809,35 @@ class Orchestrator:
                         "implemented in the code. This is a FAILURE:\n"
                         + "\n".join(f"- {n}" for n in missing_names)
                     )
-                review = await self._reviewer.verify_code(code_content, spec_for_review)
+
+                # Reviewer bypass: if tests pass and no spec coverage gaps,
+                # skip the LLM reviewer entirely and auto-pass.
+                # OR: if use_llm_reviewer is disabled globally for this model.
+                bypass = (
+                    (self._config.cascade.reviewer_bypass_on_pass or not self._config.cascade.use_llm_reviewer)
+                    and not missing_names
+                )
+                if bypass:
+                    log.info("Reviewer bypass — tests pass, no spec gaps, auto-approving")
+                    review = ReviewResult(
+                        passed=True,
+                        issues=[],
+                        suggestions=[],
+                        timestamp=__import__("datetime").datetime.now(),
+                        model_used="bypass",
+                    )
+                else:
+                    test_status = (
+                        "\n## Test Status\n"
+                        "ALL TESTS PASS. The code has been tested and produces correct "
+                        "results. You are acting as a four-eyes sanity check — only reject "
+                        "if the code is clearly faked (hardcoded return values, stub "
+                        "implementations) or is missing entire functions from the spec. "
+                        "Do NOT reject working code for style, naming, or minor issues.\n"
+                    )
+                    review = await self._reviewer.verify_code(
+                        code_content, spec_for_review, test_status=test_status
+                    )
                 task.review_history.append(review)
 
                 # Force-fail if deterministic check found missing names
@@ -732,34 +885,19 @@ class Orchestrator:
                                 log.warning("Code appears to be faked, retrying")
                                 review = fake_check
                     if review.passed:
-                            task.transition(TaskStatus.VERIFIED)
-                            if self._config.workspace.git_checkpoint:
-                                commit_hash = self._git_manager.checkpoint(
-                                    task, "verified"
-                                )
-                                task.git_checkpoint = commit_hash
-                            log.info(f"Task '{task.title}' verified!")
-                            self._emit(CascadeEvent(
-                                event_type=EventType.TASK_COMPLETE,
-                                task_title=task.title,
-                                task_id=task.id,
-                                phase="review",
-                                message=f"Task verified: {task.title}",
-                            ))
-                            self._save_state()
-                            return task
-                    else:
                         task.transition(TaskStatus.VERIFIED)
                         if self._config.workspace.git_checkpoint:
-                            commit_hash = self._git_manager.checkpoint(task, "verified")
+                            commit_hash = self._git_manager.checkpoint(
+                                task, "verified"
+                            )
                             task.git_checkpoint = commit_hash
-                        log.info(f"Task '{task.title}' verified (no tests to run)!")
+                        log.info(f"Task '{task.title}' verified!")
                         self._emit(CascadeEvent(
                             event_type=EventType.TASK_COMPLETE,
                             task_title=task.title,
                             task_id=task.id,
                             phase="review",
-                            message=f"Task verified (no tests): {task.title}",
+                            message=f"Task verified: {task.title}",
                         ))
                         self._save_state()
                         return task
@@ -807,7 +945,14 @@ class Orchestrator:
                     )
                 else:
                     # Tests fail with assertion errors — still run review for spec compliance
-                    review = await self._reviewer.verify_code(code_content, task.spec)
+                    fail_test_status = (
+                        "\n## Test Status\n"
+                        "Tests are FAILING with assertion errors. Focus your review "
+                        "on finding the bugs causing test failures.\n"
+                    )
+                    review = await self._reviewer.verify_code(
+                        code_content, task.spec, test_status=fail_test_status
+                    )
                     task.review_history.append(review)
 
                     # Combine review issues with structured test errors
@@ -846,6 +991,18 @@ class Orchestrator:
 
                     log.warning(f"Tests failed: {[e.error_type for e in structured_errors]}")
 
+            # Extract lesson from this failed attempt
+            if self._config.cascade.lesson_injection:
+                strategy = "fix_tests" if (attempt > 0 and attempt % 2 == 0) else "fix_code"
+                lesson = self._watcher.extract_lesson(
+                    attempt=attempt + 1,
+                    review=review,
+                    structured_errors=structured_errors,
+                    strategy=strategy,
+                )
+                lesson_records.append(lesson)
+                self._gate_stats["lessons_injected"] += 1
+
             # If we get here, review failed — try to fix
             if attempt < self._config.cascade.max_retries:
                 log.info(f"Review failed, retry {attempt + 1}/{self._config.cascade.max_retries}")
@@ -868,31 +1025,95 @@ class Orchestrator:
                 if is_fresh_start:
                     log.info(f"Fresh start (attempt {attempt + 1}) — regenerating from scratch")
                     context = self._context_manager.build_context(task)
+                    fresh_role = getattr(task, "_coder_role_override", None)
                     if self._config.cascade.test_first and task.test_files:
                         tests_content = self._gather_tests(task)
                         code_files = await self._coder.implement_with_tests(
                             task, context, tests_content,
                         )
                     else:
-                        code_files = await self._coder.implement(task, context)
+                        use_think = getattr(task, "_think_override", None)
+                        code_files = await self._coder.implement(task, context, role_override=fresh_role, think=use_think)
                     # Replace task file lists — fresh start may produce different paths
-                    new_code = []
-                    new_tests = list(task.test_files)  # keep test files from test-first
+                    new_code = {}
+                    new_tests = dict(task.test_files)  # keep test files from test-first
                     for cf in code_files:
                         self._file_manager.write_file(cf.path, cf.content)
                         if cf.path.startswith("test") or "/test_" in cf.path:
-                            if cf.path not in new_tests:
-                                new_tests.append(cf.path)
+                            new_tests[cf.path] = cf.content
                         else:
-                            new_code.append(cf.path)
+                            new_code[cf.path] = cf.content
                     if new_code:
                         task.code_files = new_code
                     task.test_files = new_tests
                 else:
+                    # Try zero-token runtime error fixes first
+                    if structured_errors and self._config.cascade.runtime_fixes:
+                        runtime_fixed = await self._watcher.fix_runtime_errors(
+                            task, structured_errors,
+                        )
+                        if runtime_fixed > 0:
+                            log.info(f"Runtime-fixed {runtime_fixed} error(s)")
+                            self._gate_stats["runtime_fixes"] = self._gate_stats.get("runtime_fixes", 0) + runtime_fixed
+
+                    # Try targeted micro-fix (cheap, surgical)
+                    micro_fixed = 0
+                    if structured_errors and self._config.cascade.micro_fix:
+                        micro_fixed = await self._watcher.targeted_micro_fix(
+                            task, structured_errors,
+                        )
+                        if micro_fixed > 0:
+                            log.info(f"Micro-fixed {micro_fixed} function(s)")
+                            self._gate_stats["micro_fixes"] += micro_fixed
+                            # Re-run tests to see if micro-fix resolved it
+                            retest = await self._watcher.run_tests(task)
+                            if retest.passed:
+                                code_content = self._gather_code(task)
+                                continue  # Skip coder.fix, go to review
+
+                    # Test triage: per-failure investigation cascade
+                    if structured_errors and self._config.cascade.test_triage:
+                        triage_fixed = await self._triage_failing_tests(
+                            task, structured_errors,
+                        )
+                        if triage_fixed > 0:
+                            log.info(f"Triage fixed {triage_fixed} issue(s)")
+                            # Re-run tests to see if triage resolved everything
+                            retest = await self._watcher.run_tests(task)
+                            if retest.passed:
+                                code_content = self._gather_code(task)
+                                continue  # Skip coder.fix, go to review
+
+                    # Adaptive routing: use reasoning model for first retry,
+                    # fall back to fast coder on subsequent retries
+                    fix_role = getattr(task, "_coder_role_override", None)
+                    if fix_role and attempt >= 2:
+                        log.info("Routing fallback: switching from reasoning model to fast coder")
+                        fix_role = None
+                    use_think = getattr(task, "_think_override", None)
+
+                    # Query failure memory for similar past failures
+                    fm_context = ""
+                    if self._failure_memory and review.issues:
+                        error_text = " ".join(review.issues[:3])
+                        similar = self._failure_memory.query_similar(error_text)
+                        patterns = self._failure_memory.query_patterns(error_text)
+                        parts = []
+                        if similar:
+                            parts.append("Past similar failures:\n" + "\n".join(f"- {s}" for s in similar))
+                        if patterns:
+                            parts.append("Known patterns:\n" + "\n".join(p.format_for_prompt() for p in patterns))
+                        fm_context = "\n".join(parts)
+
                     fix_files = await self._coder.fix(
-                        task, review.issues,
-                        file_manager=self._file_manager,
+                        task,
+                        code_content,
+                        "\n".join(review.issues),
+                        lessons_str="\n".join(l.summary for l in lesson_records),
+                        memory_str=fm_context,
                         retry_num=attempt + 1,
+                        coder_role=fix_role,
+                        think=use_think,
                     )
                     for cf in fix_files:
                         self._file_manager.write_file(cf.path, cf.content)
@@ -906,16 +1127,31 @@ class Orchestrator:
                     self._gate_stats["auto_fix_retry"] += auto_fixes
                     if self._project_mode:
                         self._refresh_snippets(task)
-                recalibrated = await self._watcher.calibrate_tests(task)
-                if recalibrated > 0:
-                    log.info(f"Re-calibrated {recalibrated} test assertion(s) after retry")
-                    self._gate_stats["calibrations_retry"] += recalibrated
+                if self._config.cascade.test_calibration:
+                    recalibrated = await self._watcher.calibrate_tests(task)
+                    if recalibrated > 0:
+                        log.info(f"Re-calibrated {recalibrated} test assertion(s) after retry")
+                        self._gate_stats["calibrations_retry"] += recalibrated
 
-                # Oracle repair after retry
-                oracle_repaired = await self._watcher.oracle_repair_tests(task)
-                if oracle_repaired > 0:
-                    log.info(f"Oracle-repaired {oracle_repaired} assertion(s) after retry")
-                    self._gate_stats["oracle_repairs"] += oracle_repaired
+                    # Oracle repair after retry
+                    oracle_repaired = await self._watcher.oracle_repair_tests(task)
+                    if oracle_repaired > 0:
+                        log.info(f"Oracle-repaired {oracle_repaired} assertion(s) after retry")
+                        self._gate_stats["oracle_repairs"] += oracle_repaired
+
+                # Mutation oracle after retry
+                if self._config.cascade.mutation_oracle:
+                    total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
+                    if total > 0:
+                        self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
+                        self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
+                        if kill_ratio < 0.5:
+                            warning = (
+                                f"Mutation oracle: only {killed}/{total} mutants killed "
+                                f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
+                            )
+                            log.warning(warning)
+                            task._mutation_oracle_warning = warning
 
                 # Re-check spec coverage after fix
                 missing_names = await self._watcher.spec_coverage_check(task)
@@ -933,6 +1169,23 @@ class Orchestrator:
                 else:
                     log.info("Lint issues resolved after fix")
 
+        # Store failure episodes in memory
+        if self._failure_memory and lesson_records:
+            from pmca.utils.failure_memory import FailureEpisode
+            for lesson in lesson_records:
+                episode = FailureEpisode(
+                    task_spec_summary=task.spec[:200] if task.spec else "",
+                    error_signature=lesson.summary,
+                    error_types=lesson.error_types,
+                    fix_strategy=lesson.strategy,
+                    fix_description=lesson.summary,
+                    outcome="unresolved",
+                    task_title=task.title,
+                )
+                self._failure_memory.store_episode(episode)
+            # Periodically distill patterns
+            self._failure_memory.distill_patterns()
+
         # Exhausted retries
         log.error(f"Task '{task.title}' failed after {self._config.cascade.max_retries} retries")
         task.status = TaskStatus.FAILED
@@ -946,6 +1199,155 @@ class Orchestrator:
         ))
         self._save_state()
         return task
+
+    async def _triage_failing_tests(
+        self, task: TaskNode, structured_errors: list,
+    ) -> int:
+        """Investigate each failing test with a focused mini-cascade.
+
+        For each failing test:
+        1. Architect diagnoses: is the CODE wrong or the TEST wrong?
+        2. Coder fixes the ONE thing that's wrong (narrow context)
+        3. Watcher re-runs just that test to verify
+
+        Returns number of tests fixed.
+        """
+        from pmca.prompts.coder import (
+            TRIAGE_DIAGNOSE_PROMPT,
+            TRIAGE_FIX_CODE_PROMPT,
+            TRIAGE_FIX_TEST_PROMPT,
+        )
+
+        if not structured_errors:
+            return 0
+
+        ws = Path(self._workspace_path)
+        code_files_list = list(task.code_files.keys()) if isinstance(task.code_files, dict) else list(task.code_files)
+        fixes_applied = 0
+
+        for error in structured_errors[:3]:  # cap at 3 to limit LLM calls
+            # 1. Locate the code function and test function
+            location = self._watcher._parse_error_location(
+                error, ws, code_files_list,
+            )
+            if not location:
+                continue
+            code_file, func_name = location
+
+            code_path = ws / code_file
+            if not code_path.exists():
+                continue
+            code_source = code_path.read_text()
+
+            # Extract just the relevant code function
+            func_result = self._watcher._extract_function_source(
+                code_source, func_name,
+            )
+            if not func_result:
+                continue
+            code_function, _, _ = func_result
+
+            # Extract the failing test function
+            test_name = error.test_name.split("::")[-1] if "::" in error.test_name else error.test_name
+            test_function = ""
+            test_file_path = ""
+            test_files = task.test_files if isinstance(task.test_files, dict) else {}
+            for tpath, tcontent in test_files.items():
+                tf_result = self._watcher._extract_function_source(tcontent, test_name)
+                if tf_result:
+                    test_function = tf_result[0]
+                    test_file_path = tpath
+                    break
+
+            if not test_function:
+                continue
+
+            error_text = error.format_for_prompt() if hasattr(error, 'format_for_prompt') else str(error)
+
+            # 2. DIAGNOSE: Architect decides code_wrong vs test_wrong
+            diagnose_prompt = TRIAGE_DIAGNOSE_PROMPT.format(
+                spec=task.spec or "",
+                code_function=code_function,
+                test_function=test_function,
+                error=error_text[:500],
+            )
+            diagnosis_raw = await self._architect._generate(
+                diagnose_prompt,
+                role=AgentRole.ARCHITECT,
+                think=self._think_architect_hint or None,
+            )
+
+            # Parse verdict
+            import json as _json
+            verdict = "code_wrong"  # default to fixing code
+            diagnosis_text = diagnosis_raw
+            try:
+                # Extract JSON from response
+                json_match = re.search(r'\{[^}]+\}', diagnosis_raw, re.DOTALL)
+                if json_match:
+                    parsed = _json.loads(json_match.group())
+                    verdict = parsed.get("verdict", "code_wrong")
+                    reasoning = parsed.get("reasoning", "")
+                    correct_val = parsed.get("correct_value", "")
+                    diagnosis_text = f"{reasoning} Correct value: {correct_val}"
+            except (ValueError, KeyError):
+                pass
+
+            log.info(
+                f"Triage [{error.test_name}]: verdict={verdict} "
+                f"({diagnosis_text[:80]})"
+            )
+            self._gate_stats["triage_investigations"] = (
+                self._gate_stats.get("triage_investigations", 0) + 1
+            )
+
+            # 3. FIX: Coder fixes the one thing that's wrong
+            if verdict == "test_wrong":
+                fix_prompt = TRIAGE_FIX_TEST_PROMPT.format(
+                    spec=task.spec or "",
+                    code_function=code_function,
+                    test_function=test_function,
+                    diagnosis=diagnosis_text,
+                    filepath=test_file_path,
+                )
+                fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
+                fix_files = self._coder._parse_code_blocks(fix_response)
+
+                for cf in fix_files:
+                    if cf.path in test_files:
+                        # Splice the fixed test function back into the full file
+                        self._file_manager.write_file(cf.path, cf.content)
+                        task.test_files[cf.path] = cf.content
+                        fixes_applied += 1
+                        self._gate_stats["triage_test_fixes"] = (
+                            self._gate_stats.get("triage_test_fixes", 0) + 1
+                        )
+            else:
+                fix_prompt = TRIAGE_FIX_CODE_PROMPT.format(
+                    spec=task.spec or "",
+                    code_function=code_function,
+                    diagnosis=diagnosis_text,
+                    filepath=code_file,
+                )
+                fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
+                fix_files = self._coder._parse_code_blocks(fix_response)
+
+                for cf in fix_files:
+                    self._file_manager.write_file(cf.path, cf.content)
+                    if isinstance(task.code_files, dict):
+                        task.code_files[cf.path] = cf.content
+                    fixes_applied += 1
+                    self._gate_stats["triage_code_fixes"] = (
+                        self._gate_stats.get("triage_code_fixes", 0) + 1
+                    )
+
+            # 4. VERIFY: Re-run tests to see if this fixed it
+            retest = await self._watcher.run_tests(task)
+            if retest.passed:
+                log.info(f"Triage resolved all failures after fixing {error.test_name}")
+                return fixes_applied
+
+        return fixes_applied
 
     async def integrate_phase(self, task: TaskNode) -> TaskNode:
         """Verify all children work together after they complete."""
@@ -1005,14 +1407,14 @@ class Orchestrator:
             # Collect all child files
             seen: set[str] = set()
             for child in children:
-                for f in child.code_files:
-                    if f not in seen:
-                        task.code_files.append(f)
-                        seen.add(f)
-                for f in child.test_files:
-                    if f not in seen:
-                        task.test_files.append(f)
-                        seen.add(f)
+                for f_path, f_content in child.code_files.items():
+                    if f_path not in seen:
+                        task.code_files[f_path] = f_content
+                        seen.add(f_path)
+                for f_path, f_content in child.test_files.items():
+                    if f_path not in seen:
+                        task.test_files[f_path] = f_content
+                        seen.add(f_path)
 
             # Run all collected tests as integration check
             if task.test_files:
@@ -1049,14 +1451,14 @@ class Orchestrator:
                     task.git_checkpoint = commit_hash
                 seen: set[str] = set()
                 for child in children:
-                    for f in child.code_files:
-                        if f not in seen:
-                            task.code_files.append(f)
-                            seen.add(f)
-                    for f in child.test_files:
-                        if f not in seen:
-                            task.test_files.append(f)
-                            seen.add(f)
+                    for f_path, f_content in child.code_files.items():
+                        if f_path not in seen:
+                            task.code_files[f_path] = f_content
+                            seen.add(f_path)
+                    for f_path, f_content in child.test_files.items():
+                        if f_path not in seen:
+                            task.test_files[f_path] = f_content
+                            seen.add(f_path)
                 log.info(f"Integration verified for '{task.title}'")
             else:
                 log.error(f"Integration failed for '{task.title}': {review.issues}")
@@ -1096,19 +1498,19 @@ class Orchestrator:
                         deps[dep_idx].append(idx)
                         in_degree[idx] += 1
 
-        # Kahn's algorithm
+        # Kahn's algorithm with heap for stable ordering
+        import heapq
         queue = [i for i in range(len(children)) if in_degree[i] == 0]
+        heapq.heapify(queue)
         sorted_indices: list[int] = []
 
         while queue:
-            # Stable sort: process lowest index first
-            queue.sort()
-            node = queue.pop(0)
+            node = heapq.heappop(queue)
             sorted_indices.append(node)
             for neighbor in deps.get(node, []):
                 in_degree[neighbor] -= 1
                 if in_degree[neighbor] == 0:
-                    queue.append(neighbor)
+                    heapq.heappush(queue, neighbor)
 
         if len(sorted_indices) != len(children):
             # Cycle detected — fall back to original order
@@ -1145,23 +1547,15 @@ class Orchestrator:
     def _gather_code(self, task: TaskNode) -> str:
         """Gather all code content for a task."""
         parts: list[str] = []
-        for path in task.code_files:
-            try:
-                content = self._file_manager.read_file(path)
-                parts.append(f"# {path}\n{content}")
-            except FileNotFoundError:
-                log.warning(f"Code file not found: {path}")
+        for path, content in task.code_files.items():
+            parts.append(f"# {path}\n{content}")
         return "\n\n".join(parts) if parts else ""
 
     def _gather_tests(self, task: TaskNode) -> str:
         """Gather all test content for a task."""
         parts: list[str] = []
-        for path in task.test_files:
-            try:
-                content = self._file_manager.read_file(path)
-                parts.append(f"# {path}\n{content}")
-            except FileNotFoundError:
-                log.warning(f"Test file not found: {path}")
+        for path, content in task.test_files.items():
+            parts.append(f"# {path}\n{content}")
         return "\n\n".join(parts) if parts else ""
 
     def _save_state(self) -> None:
@@ -1197,12 +1591,8 @@ class Orchestrator:
         if root is None:
             return result
         for node in self._task_tree.walk():
-            for path in node.code_files:
-                try:
-                    content = self._file_manager.read_file(path)
-                    result[path] = content
-                except FileNotFoundError:
-                    pass
+            for path, content in node.code_files.items():
+                result[path] = content
         return result
 
     @classmethod

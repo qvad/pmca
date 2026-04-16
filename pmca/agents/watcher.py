@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pmca.agents.base import BaseAgent
-from pmca.models.config import AgentRole, LintConfig
+from pmca.models.config import AgentRole, CascadeConfig, LintConfig
 from pmca.prompts import watcher as prompts
 from pmca.tasks.state import ReviewResult, TestResult
 from pmca.tasks.tree import TaskNode
@@ -142,15 +142,116 @@ class _UsageVisitor(ast.NodeVisitor):
 class WatcherAgent(BaseAgent):
     role = AgentRole.WATCHER
 
-    def __init__(self, model_manager, workspace_path=None, lint_config: LintConfig | None = None) -> None:
+    def __init__(self, model_manager, workspace_path=None, lint_config: LintConfig | None = None,
+                 cascade_config: CascadeConfig | None = None) -> None:
         super().__init__(model_manager)
         self._workspace_path = workspace_path
         self._lint_config = lint_config
+        self._cascade = cascade_config or CascadeConfig()
+
+    def _get_system_prompt(self) -> str:
+        """Construct system prompt with Watcher SOP."""
+        system = prompts.SYSTEM_PROMPT
+        from pmca.prompts import WATCHER_SOP
+        if WATCHER_SOP not in system:
+            system += "\n" + WATCHER_SOP
+        return system
 
     def _find_python(self) -> str:
         """Find a Python executable that has pytest available."""
         # First: use the same Python that's running PMCA (it has pytest in dev)
         return sys.executable
+
+    @staticmethod
+    def _extract_function_source(source: str, function_name: str) -> tuple[str, int, int] | None:
+        """Extract a function's source lines using AST.
+
+        Returns (function_source, start_line_0indexed, end_line_0indexed) or None.
+        Handles both top-level functions and class methods.
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return None
+
+        lines = source.splitlines()
+
+        # Search top-level and inside classes
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name == function_name and node.end_lineno is not None:
+                    start = node.lineno - 1  # 0-indexed
+                    end = node.end_lineno     # end_lineno is 1-indexed inclusive
+                    return "\n".join(lines[start:end]), start, end
+        return None
+
+    @staticmethod
+    def _parse_error_location(
+        error: TestError, workspace: Path, code_files: list[str],
+    ) -> tuple[str, str] | None:
+        """Find which source file and function a TestError originates from.
+
+        Parses the traceback for file paths and line numbers, then uses AST
+        to find which function contains that line. Only considers code files
+        (not test files).
+
+        Returns (relative_file_path, function_name) or None.
+        """
+        # Strategy 1: parse traceback for file:line references
+        tb = error.traceback or ""
+        source_line = error.source_line or ""
+
+        # Look for file references in traceback
+        for code_file in code_files:
+            abs_path = workspace / code_file
+            if not abs_path.exists() or not code_file.endswith(".py"):
+                continue
+
+            try:
+                source = abs_path.read_text()
+                tree = ast.parse(source)
+            except (OSError, SyntaxError):
+                continue
+
+            # Strategy 2: if error has source_line, find which function contains
+            # code that matches the error pattern
+            # For TypeError/KeyError, the error often comes from the source code
+            # For AssertionError, it comes from tests — but we want the CODE function
+            # that produced the wrong result
+
+            # Collect all functions with their line ranges
+            functions: list[tuple[str, int, int]] = []
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if node.end_lineno is not None:
+                        functions.append((node.name, node.lineno, node.end_lineno))
+
+            if not functions:
+                continue
+
+            # For TypeError/KeyError: search traceback for line numbers in this file
+            for m in re.finditer(r"line (\d+)", tb):
+                lineno = int(m.group(1))
+                for fname, start, end in functions:
+                    if start <= lineno <= end:
+                        return code_file, fname
+
+            # For AssertionError: try to find the function being tested
+            # The test name often contains the function name: test_sort → sort
+            test_name = error.test_name.split("::")[-1] if "::" in error.test_name else error.test_name
+            # Strip "test_" prefix to get the likely function name
+            if test_name.startswith("test_"):
+                target = test_name[5:]
+                for fname, _start, _end in functions:
+                    if fname == target or target in fname or fname in target:
+                        return code_file, fname
+
+            # Fallback: if only one non-__init__ function exists, use it
+            non_init = [(f, s, e) for f, s, e in functions if f != "__init__"]
+            if len(non_init) == 1:
+                return code_file, non_init[0][0]
+
+        return None
 
     @staticmethod
     def _fix_package_imports(workspace: Path) -> int:
@@ -268,15 +369,6 @@ class WatcherAgent(BaseAgent):
         # Apply in reverse order to preserve line numbers
         edits.sort(key=lambda e: e[0], reverse=True)
         for _def_line, param_name, mutable_type, body_line, body_indent in edits:
-            # Replace `param=[]` with `param=None` in the def line
-            for pattern in [
-                f"{param_name}=[]{{}}", f"{param_name}=[]",
-                f"{param_name} = []", f"{param_name}={{}}",
-                f"{param_name} = {{}}", f"{param_name}=set()",
-                f"{param_name} = set()",
-            ]:
-                pass  # handled below
-
             # Use regex to replace the default value in the source
             source = "".join(lines)
             # Match param_name followed by optional type annotation, then = mutable
@@ -373,36 +465,38 @@ class WatcherAgent(BaseAgent):
         # First pass: fix package-style imports (e.g. from taskboard.models → from models)
         fixes_applied = 0
         ws = Path(self._workspace_path)
-        pkg_fixes = self._fix_package_imports(ws)
-        if pkg_fixes > 0:
-            fixes_applied += pkg_fixes
-            self._log.info(
-                f"Auto-fixed: {pkg_fixes} package-style import(s) rewritten to flat"
-            )
-
-        # Second pass: fix mutable default arguments (no subprocess needed)
-        for code_file in task.code_files:
-            file_path = Path(self._workspace_path) / code_file
-            if not file_path.exists() or not code_file.endswith(".py"):
-                continue
-            count = self._fix_mutable_defaults(file_path)
-            if count > 0:
-                fixes_applied += count
+        if self._cascade.import_fixes:
+            pkg_fixes = self._fix_package_imports(ws)
+            if pkg_fixes > 0:
+                fixes_applied += pkg_fixes
                 self._log.info(
-                    f"Auto-fixed: {count} mutable default arg(s) in {code_file}"
+                    f"Auto-fixed: {pkg_fixes} package-style import(s) rewritten to flat"
                 )
 
-        # Third pass: fix attribute/method shadowing (self.size + def size())
-        for code_file in task.code_files:
-            file_path = Path(self._workspace_path) / code_file
-            if not file_path.exists() or not code_file.endswith(".py"):
-                continue
-            count = self._fix_attr_method_shadowing(file_path)
-            if count > 0:
-                fixes_applied += count
-                self._log.info(
-                    f"Auto-fixed: {count} attribute/method shadowing(s) in {code_file}"
-                )
+        if self._cascade.ast_fixes:
+            # Second pass: fix mutable default arguments (no subprocess needed)
+            for code_file in task.code_files:
+                file_path = Path(self._workspace_path) / code_file
+                if not file_path.exists() or not code_file.endswith(".py"):
+                    continue
+                count = self._fix_mutable_defaults(file_path)
+                if count > 0:
+                    fixes_applied += count
+                    self._log.info(
+                        f"Auto-fixed: {count} mutable default arg(s) in {code_file}"
+                    )
+
+            # Third pass: fix attribute/method shadowing (self.size + def size())
+            for code_file in task.code_files:
+                file_path = Path(self._workspace_path) / code_file
+                if not file_path.exists() or not code_file.endswith(".py"):
+                    continue
+                count = self._fix_attr_method_shadowing(file_path)
+                if count > 0:
+                    fixes_applied += count
+                    self._log.info(
+                        f"Auto-fixed: {count} attribute/method shadowing(s) in {code_file}"
+                    )
 
         # Ruff auto-fix pass: clean unused/duplicate imports, etc.
         from pmca.utils.linters import ruff_autofix
@@ -414,6 +508,19 @@ class WatcherAgent(BaseAgent):
                 continue
             count = await ruff_autofix(file_path, ws)
             fixes_applied += count
+
+        # Semgrep auto-fix pass: fix known 7B anti-patterns (graceful skip if not installed)
+        from pmca.utils.linters import semgrep_autofix
+
+        for code_file in task.code_files:
+            file_path = ws / code_file
+            if not file_path.exists() or not code_file.endswith(".py"):
+                continue
+            count = await semgrep_autofix(file_path, ws)
+            fixes_applied += count
+
+        if not self._cascade.import_fixes:
+            return fixes_applied
 
         python_exe = self._find_python()
         max_passes = 3  # multiple imports may be missing
@@ -488,6 +595,625 @@ class WatcherAgent(BaseAgent):
 
         return fixes_applied
 
+    # ------------------------------------------------------------------
+    # Phase 2B — Defensive guard injection (preventive, pre-test)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _make_none_safe_expr(expr_node: ast.expr) -> str | None:
+        """Build a None-safe sort expression from an AST node.
+
+        Returns a string like '(x.date is None, x.date or "")' or None
+        if the expression is already safe or can't be guarded.
+        """
+        # Already a none-safe tuple like (x is None, x or '')
+        if isinstance(expr_node, ast.Tuple):
+            # Check if first element is an `is None` compare
+            if (
+                len(expr_node.elts) >= 2
+                and isinstance(expr_node.elts[0], ast.Compare)
+                and any(isinstance(op, ast.Is) for op in expr_node.elts[0].ops)
+            ):
+                return None  # already guarded
+
+        src = ast.unparse(expr_node)
+
+        # Skip constants, unary ops on constants (like -priority), booleans
+        if isinstance(expr_node, ast.Constant):
+            return None
+        if isinstance(expr_node, ast.UnaryOp) and isinstance(expr_node.operand, ast.Constant):
+            return None
+
+        # For simple field access (x.date, x['due'], x.get(field))
+        # these can be None — wrap them.
+        # Use '' as fallback only for the sort comparison value; (is_None, '')
+        # sorts None last. We use '' because it's safe for string comparison
+        # and for mixed types Python will just use the is_None flag.
+        if isinstance(expr_node, (ast.Attribute, ast.Subscript, ast.Call, ast.Name)):
+            return f"({src} is None, {src} if {src} is not None else '')"
+
+        return None
+
+    @staticmethod
+    def _guard_sort_keys(source: str) -> tuple[str, int]:
+        """Wrap sort key lambdas with None-safe expressions.
+
+        Handles both simple keys and tuple keys:
+          Before: key=lambda x: x.date
+          After:  key=lambda x: (x.date is None, x.date or "")
+
+          Before: key=lambda x: (x['done'], x[sort_by])
+          After:  key=lambda x: (x['done'], (x[sort_by] is None, x[sort_by] or ''))
+
+        Skips elements that are already guarded, constants, or unary ops.
+        Returns (new_source, fixes_applied).
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source, 0
+
+        lines = source.splitlines()
+        fixes = 0
+        replacements: list[tuple[int, str, str]] = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            is_sorted = isinstance(node.func, ast.Name) and node.func.id == "sorted"
+            is_sort_method = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "sort"
+            )
+            if not is_sorted and not is_sort_method:
+                continue
+
+            key_kw = None
+            for kw in node.keywords:
+                if kw.arg == "key":
+                    key_kw = kw
+                    break
+            if key_kw is None:
+                continue
+
+            if not isinstance(key_kw.value, ast.Lambda):
+                continue
+
+            lam = key_kw.value
+            body = lam.body
+            args_src = ast.unparse(lam.args)
+
+            # Case 1: Tuple key — guard individual elements
+            if isinstance(body, ast.Tuple):
+                new_elts = []
+                any_changed = False
+                for elt in body.elts:
+                    guarded = WatcherAgent._make_none_safe_expr(elt)
+                    if guarded:
+                        new_elts.append(guarded)
+                        any_changed = True
+                    else:
+                        new_elts.append(ast.unparse(elt))
+                if not any_changed:
+                    continue
+                guarded_body = f"({', '.join(new_elts)})"
+                new_lambda = f"lambda {args_src}: {guarded_body}"
+            else:
+                # Case 2: Simple key — wrap entire body
+                guarded = WatcherAgent._make_none_safe_expr(body)
+                if not guarded:
+                    continue
+                new_lambda = f"lambda {args_src}: {guarded}"
+
+            # Try to match the lambda in the source line
+            # ast.unparse may use different quotes than the original source,
+            # so we try the unparsed version first, then fall back to
+            # extracting the lambda from the raw source via column offsets.
+            old_lambda_src = ast.unparse(lam)
+            if lam.lineno and lam.lineno <= len(lines):
+                line_idx = lam.lineno - 1
+                line = lines[line_idx]
+                if old_lambda_src in line:
+                    replacements.append((line_idx, old_lambda_src, new_lambda))
+                else:
+                    # Fallback: find 'lambda' keyword and extract to end of key=
+                    # by locating the key= keyword's col_offset
+                    lam_start = line.find("lambda")
+                    if lam_start >= 0:
+                        # Find the extent: from 'lambda' to the next top-level comma or ')'
+                        depth = 0
+                        end = len(line)
+                        for i in range(lam_start, len(line)):
+                            ch = line[i]
+                            if ch in "([{":
+                                depth += 1
+                            elif ch in ")]}":
+                                if depth == 0:
+                                    end = i
+                                    break
+                                depth -= 1
+                            elif ch == "," and depth == 0:
+                                end = i
+                                break
+                        old_text = line[lam_start:end].rstrip()
+                        if old_text:
+                            replacements.append((line_idx, old_text, new_lambda))
+
+        for line_idx, old_text, new_text in sorted(replacements, reverse=True):
+            lines[line_idx] = lines[line_idx].replace(old_text, new_text, 1)
+            fixes += 1
+
+        if fixes > 0:
+            new_source = "\n".join(lines)
+            try:
+                ast.parse(new_source)
+            except SyntaxError:
+                return source, 0
+            return new_source, fixes
+        return source, 0
+
+    @staticmethod
+    def _guard_index_zero(source: str) -> tuple[str, int]:
+        """Add empty-collection guards before unguarded x[0] access.
+
+        Before: result = items[0]
+        After:  result = items[0] if items else None
+
+        Only guards simple Name[0] or Name[-1] patterns that aren't
+        already inside an if-guard.
+
+        Returns (new_source, fixes_applied).
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source, 0
+
+        lines = source.splitlines()
+        fixes = 0
+        replacements: list[tuple[int, str, str]] = []
+
+        # Walk each function to understand scope and existing guards
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            # Collect names that have if-guards in this function
+            guarded_names: set[str] = set()
+            for child in ast.walk(func_node):
+                if isinstance(child, ast.If):
+                    test = child.test
+                    # if items: / if len(items): / if items is not None:
+                    if isinstance(test, ast.Name):
+                        guarded_names.add(test.id)
+                    elif isinstance(test, ast.Call) and isinstance(test.func, ast.Name):
+                        if test.func.id == "len" and test.args:
+                            if isinstance(test.args[0], ast.Name):
+                                guarded_names.add(test.args[0].id)
+                    elif isinstance(test, ast.Compare):
+                        if isinstance(test.left, ast.Name):
+                            guarded_names.add(test.left.id)
+
+            # Find unguarded x[0] or x[-1] accesses
+            for child in ast.walk(func_node):
+                if not isinstance(child, ast.Subscript):
+                    continue
+                if not isinstance(child.value, ast.Name):
+                    continue
+                # Check index is 0 or -1
+                slc = child.slice
+                is_zero = isinstance(slc, ast.Constant) and slc.value in (0, -1)
+                is_neg = (
+                    isinstance(slc, ast.UnaryOp)
+                    and isinstance(slc.op, ast.USub)
+                    and isinstance(slc.operand, ast.Constant)
+                    and slc.operand.value == 1
+                )
+                if not is_zero and not is_neg:
+                    continue
+
+                collection_name = child.value.id
+                if collection_name in guarded_names:
+                    continue
+
+                # Check this subscript is a standalone assignment value
+                # (not inside a larger expression already handled)
+                if not child.lineno or child.lineno > len(lines):
+                    continue
+
+                line_idx = child.lineno - 1
+                line = lines[line_idx]
+
+                # Skip if line already has an `if` ternary
+                if " if " in line and " else " in line:
+                    continue
+
+                # Build the guarded expression
+                sub_src = ast.unparse(child)
+                guarded_expr = f"{sub_src} if {collection_name} else None"
+
+                if sub_src in line:
+                    replacements.append((line_idx, sub_src, guarded_expr))
+                    guarded_names.add(collection_name)  # don't double-guard
+
+        # Apply replacements in reverse order
+        seen_lines: set[int] = set()
+        for line_idx, old_text, new_text in sorted(replacements, reverse=True):
+            if line_idx in seen_lines:
+                continue
+            seen_lines.add(line_idx)
+            lines[line_idx] = lines[line_idx].replace(old_text, new_text, 1)
+            fixes += 1
+
+        if fixes > 0:
+            new_source = "\n".join(lines)
+            try:
+                ast.parse(new_source)
+            except SyntaxError:
+                return source, 0
+            return new_source, fixes
+        return source, 0
+
+    @staticmethod
+    def _guard_missing_else_raise(source: str) -> tuple[str, int]:
+        """Add 'else: raise ValueError' to if/elif chains that handle enums.
+
+        7B models often generate if/elif chains for op/func_name dispatch
+        without a final else clause. This adds 'else: raise ValueError(...)'.
+
+        Pattern: a function that has 3+ if/elif branches comparing the same
+        variable, with no else clause and no raise in the chain.
+
+        Returns (new_source, fixes_applied).
+        """
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source, 0
+
+        lines = source.splitlines()
+        fixes = 0
+        insertions: list[tuple[int, str]] = []  # (line_idx_after, text_to_insert)
+
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            for node in ast.iter_child_nodes(func_node):
+                if not isinstance(node, ast.If):
+                    continue
+
+                # Count the if/elif chain length
+                chain_len = 1
+                has_else = False
+                has_raise = False
+                compared_var = None
+                last_node = node
+
+                # Extract the compared variable from the first if
+                if isinstance(node.test, ast.Compare):
+                    if isinstance(node.test.left, ast.Name):
+                        compared_var = node.test.left.id
+
+                # Walk the elif chain
+                current = node
+                while current.orelse:
+                    if (
+                        len(current.orelse) == 1
+                        and isinstance(current.orelse[0], ast.If)
+                    ):
+                        current = current.orelse[0]
+                        chain_len += 1
+                        last_node = current
+                        # Check for raise in this branch
+                        for child in ast.walk(current):
+                            if isinstance(child, ast.Raise):
+                                has_raise = True
+                    else:
+                        has_else = True
+                        break
+
+                # Check for raise in any branch
+                for child in ast.walk(node):
+                    if isinstance(child, ast.Raise):
+                        has_raise = True
+
+                # Only guard chains with 3+ branches, no else, comparing a variable
+                if chain_len < 3 or has_else or has_raise or not compared_var:
+                    continue
+
+                # Determine indentation of the last elif
+                if last_node.end_lineno and last_node.end_lineno <= len(lines):
+                    last_line = lines[last_node.end_lineno - 1]
+                    indent = len(last_line) - len(last_line.lstrip())
+                    # Find the indentation of the if/elif keyword itself
+                    if_line = lines[last_node.lineno - 1]
+                    if_indent = len(if_line) - len(if_line.lstrip())
+                    else_line = " " * if_indent + "else:"
+                    raise_line = " " * if_indent + f"    raise ValueError(f\"Unknown {{repr({compared_var})}}\")"
+                    insertions.append(
+                        (last_node.end_lineno, f"{else_line}\n{raise_line}")
+                    )
+                    fixes += 1
+
+        # Apply insertions in reverse order
+        for line_idx, text in sorted(insertions, reverse=True):
+            lines.insert(line_idx, text)
+
+        if fixes > 0:
+            new_source = "\n".join(lines)
+            try:
+                ast.parse(new_source)
+            except SyntaxError:
+                return source, 0
+            return new_source, fixes
+        return source, 0
+
+    async def inject_defensive_guards(self, task: TaskNode) -> int:
+        """Inject defensive guards into generated code before first test run.
+
+        Zero LLM tokens. Returns count of guards injected.
+        """
+        if not task.code_files or not self._workspace_path:
+            return 0
+
+        ws = Path(self._workspace_path)
+        total = 0
+        for code_file in task.code_files:
+            file_path = ws / code_file
+            if not file_path.exists() or not code_file.endswith(".py"):
+                continue
+            try:
+                source = file_path.read_text()
+            except OSError:
+                continue
+            new_source, count = self._guard_sort_keys(source)
+            new_source, count2 = self._guard_index_zero(new_source)
+            new_source, count3 = self._guard_missing_else_raise(new_source)
+            subtotal = count + count2 + count3
+            if subtotal > 0:
+                file_path.write_text(new_source)
+                total += subtotal
+                self._log.info(
+                    f"Defensive guards: {count} sort key(s), {count2} index guard(s), "
+                    f"{count3} else-raise(s) in {code_file}"
+                )
+        return total
+
+    # ------------------------------------------------------------------
+    # Phase 2A — Runtime error repair (error-driven, in retry loop)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fix_typeerror_in_sort(source: str, error: TestError) -> tuple[str, int]:
+        """Fix TypeError from None comparison in sort keys.
+
+        When traceback mentions "'<' not supported" and a sort call is on
+        the failing line, wrap the key lambda with None-safe tuple.
+
+        Returns (new_source, fixes_applied).
+        """
+        tb = error.traceback or ""
+        if "'<' not supported" not in tb:
+            return source, 0
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source, 0
+
+        # Find the failing line number from traceback
+        error_lines: list[int] = []
+        for m in re.finditer(r"line (\d+)", tb):
+            error_lines.append(int(m.group(1)))
+
+        if not error_lines:
+            return source, 0
+
+        lines = source.splitlines()
+        fixes = 0
+
+        # Find all sort/sorted calls and check if they're on an error line
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+
+            is_sorted = isinstance(node.func, ast.Name) and node.func.id == "sorted"
+            is_sort_method = (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "sort"
+            )
+            if not is_sorted and not is_sort_method:
+                continue
+
+            # Check if this sort call is in a function that contains the error line
+            # (sort itself may not be on the exact error line, but in the same function)
+            call_line = node.lineno
+            if not call_line:
+                continue
+
+            # Find key= kwarg
+            key_kw = None
+            for kw in node.keywords:
+                if kw.arg == "key":
+                    key_kw = kw
+                    break
+
+            if key_kw is None:
+                # No key= means sorting by value directly; add a key
+                # This handles: sorted(items) where items contain None
+                continue
+
+            if not isinstance(key_kw.value, ast.Lambda):
+                continue
+
+            lam = key_kw.value
+            body = lam.body
+            args_src = ast.unparse(lam.args)
+
+            # Handle both tuple and simple keys — reuse shared helper
+            if isinstance(body, ast.Tuple):
+                new_elts = []
+                any_changed = False
+                for elt in body.elts:
+                    g = WatcherAgent._make_none_safe_expr(elt)
+                    if g:
+                        new_elts.append(g)
+                        any_changed = True
+                    else:
+                        new_elts.append(ast.unparse(elt))
+                if not any_changed:
+                    continue
+                new_lambda = f"lambda {args_src}: ({', '.join(new_elts)})"
+            else:
+                g = WatcherAgent._make_none_safe_expr(body)
+                if not g:
+                    continue
+                new_lambda = f"lambda {args_src}: {g}"
+
+            old_lambda_src = ast.unparse(lam)
+            if lam.lineno and lam.lineno <= len(lines):
+                line_idx = lam.lineno - 1
+                line = lines[line_idx]
+                if old_lambda_src in line:
+                    lines[line_idx] = line.replace(old_lambda_src, new_lambda, 1)
+                    fixes += 1
+                else:
+                    # Fallback: find lambda keyword by position
+                    lam_start = line.find("lambda")
+                    if lam_start >= 0:
+                        depth = 0
+                        end = len(line)
+                        for i in range(lam_start, len(line)):
+                            ch = line[i]
+                            if ch in "([{":
+                                depth += 1
+                            elif ch in ")]}":
+                                if depth == 0:
+                                    end = i
+                                    break
+                                depth -= 1
+                            elif ch == "," and depth == 0:
+                                end = i
+                                break
+                        old_text = line[lam_start:end].rstrip()
+                        if old_text:
+                            lines[line_idx] = line.replace(old_text, new_lambda, 1)
+                            fixes += 1
+
+        if fixes > 0:
+            new_source = "\n".join(lines)
+            try:
+                ast.parse(new_source)
+            except SyntaxError:
+                return source, 0
+            return new_source, fixes
+        return source, 0
+
+    @staticmethod
+    def _fix_index_error(source: str, error: TestError) -> tuple[str, int]:
+        """Fix IndexError by adding empty-collection guard.
+
+        When traceback points to a line with x[0] or x[-1], wraps it
+        with an if-guard or ternary.
+
+        Returns (new_source, fixes_applied).
+        """
+        tb = error.traceback or ""
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return source, 0
+
+        # Find the failing line from traceback
+        error_linenos: list[int] = []
+        for m in re.finditer(r"line (\d+)", tb):
+            error_linenos.append(int(m.group(1)))
+
+        if not error_linenos:
+            return source, 0
+
+        lines = source.splitlines()
+        fixes = 0
+
+        for lineno in error_linenos:
+            if lineno < 1 or lineno > len(lines):
+                continue
+            line_idx = lineno - 1
+            line = lines[line_idx]
+
+            # Already has a guard
+            if " if " in line and " else " in line:
+                continue
+
+            # Find x[0] or x[-1] pattern
+            idx_match = re.search(r'(\w+)\[([0-9]+|-[0-9]+)\]', line)
+            if not idx_match:
+                continue
+
+            collection_name = idx_match.group(0)  # e.g. "items[0]"
+            var_name = idx_match.group(1)  # e.g. "items"
+
+            # Build ternary guard
+            guarded = f"{collection_name} if {var_name} else None"
+            lines[line_idx] = line.replace(collection_name, guarded, 1)
+            fixes += 1
+            break  # Fix only the first occurrence per error
+
+        if fixes > 0:
+            new_source = "\n".join(lines)
+            try:
+                ast.parse(new_source)
+            except SyntaxError:
+                return source, 0
+            return new_source, fixes
+        return source, 0
+
+    async def fix_runtime_errors(
+        self,
+        task: TaskNode,
+        structured_errors: list[TestError],
+    ) -> int:
+        """Apply deterministic fixes for runtime errors. Zero LLM tokens.
+
+        Runs in the retry loop BEFORE targeted_micro_fix.
+        Returns count of fixes applied.
+        """
+        if not task.code_files or not self._workspace_path:
+            return 0
+
+        ws = Path(self._workspace_path)
+        total = 0
+        for error in structured_errors:
+            for code_file in task.code_files:
+                if code_file.startswith("test"):
+                    continue
+                file_path = ws / code_file
+                if not file_path.exists() or not code_file.endswith(".py"):
+                    continue
+                try:
+                    source = file_path.read_text()
+                except OSError:
+                    continue
+                new_source = source
+
+                if error.error_type == "TypeError":
+                    new_source, n = self._fix_typeerror_in_sort(new_source, error)
+                    total += n
+                elif error.error_type == "IndexError":
+                    new_source, n = self._fix_index_error(new_source, error)
+                    total += n
+
+                if new_source != source:
+                    try:
+                        ast.parse(new_source)
+                        file_path.write_text(new_source)
+                    except SyntaxError:
+                        pass  # Don't write broken code
+        return total
+
     @staticmethod
     def _check_api_consistency(workspace: Path) -> list[str]:
         """Detect attribute/method shadowing and mixed call sites.
@@ -550,6 +1276,9 @@ class WatcherAgent(BaseAgent):
         test_files.extend(
             f for f in workspace.glob("test_*.py") if f not in test_files
         )
+
+        _IGNORED_MODULES = {"httpx", "os", "sys", "json", "re", "math", "asyncio", "yaml"}
+
         for tf in test_files:
             try:
                 tree = ast.parse(tf.read_text())
@@ -558,6 +1287,8 @@ class WatcherAgent(BaseAgent):
             visitor = _UsageVisitor()
             visitor.visit(tree)
             for var in visitor.calls:
+                if var in _IGNORED_MODULES:
+                    continue
                 if var not in visitor.accesses:
                     continue
                 mixed = visitor.accesses[var] & visitor.calls[var]
@@ -655,10 +1386,14 @@ class WatcherAgent(BaseAgent):
             else:
                 expected_names.add(name.lower())
 
-        # Pattern: comma-separated function lists
+        # Pattern: comma-separated function lists — run on ORIGINAL task title only,
+        # NOT on architect-generated spec. The architect spec introduces descriptive
+        # variable names (e.g. "field_value", "row_count") in prose that are not
+        # functions to implement. The original request explicitly names functions.
         # "filter_by_status, filter_by_priority, sort_by_priority"
+        title_lower = task.title.lower() if task.title else spec_lower
         for m in re.finditer(
-            r"(\w+(?:_\w+)+)(?:\s*,\s*(\w+(?:_\w+)+))+", spec_lower
+            r"(\w+(?:_\w+)+)(?:\s*,\s*(\w+(?:_\w+)+))+", title_lower
         ):
             full_match = m.group(0)
             for name in re.findall(r"\w+(?:_\w+)+", full_match):
@@ -676,9 +1411,18 @@ class WatcherAgent(BaseAgent):
         # PascalCase (starts uppercase) → class name
         # Plain lowercase words (board, name, status) are parameter/field names
         # Also exclude Python builtins
-        _BUILTINS = {"True", "False", "None", "Exception", "ValueError",
-                      "TypeError", "KeyError", "IndexError", "AttributeError",
-                      "NotImplementedError", "StopIteration", "RuntimeError"}
+        _BUILTINS = {
+            # Python builtins / exceptions
+            "True", "False", "None", "Exception", "ValueError",
+            "TypeError", "KeyError", "IndexError", "AttributeError",
+            "NotImplementedError", "StopIteration", "RuntimeError",
+            "OSError", "IOError", "FileNotFoundError", "PermissionError",
+            # typing module — appear in specs as type hints, never as functions to implement
+            "Any", "Optional", "Union", "List", "Dict", "Set", "Tuple",
+            "Type", "Callable", "Sequence", "Mapping", "Iterable", "Iterator",
+            "Generator", "Coroutine", "ClassVar", "Final", "Literal",
+            "TypeVar", "Generic", "Protocol", "NamedTuple", "TypedDict",
+        }
 
         # Exclude parameter names: names that appear inside parentheses
         # e.g. "filter_by_priority(tasks, min_priority)" → min_priority is a param
@@ -692,11 +1436,30 @@ class WatcherAgent(BaseAgent):
                 if param:
                     param_names.add(param)
 
+        # OOP descriptor suffixes: "rows_self", "cols_other" come from spec text like
+        # "result dimensions: (rows_self, cols_other)" — never actual function names.
+        _OOP_SUFFIXES = ("_self", "_other", "_a", "_b", "_me")
+        _OOP_PREFIXES = ("self_", "other_")
+
+        # also exclude common library names mentioned in tech constraints
+        _LIB_NAMES = {
+            "pyyaml", "yaml", "json", "httpx", "asyncio", "math", "re", 
+            "hashlib", "datetime", "os", "sys", "abc", "typing", "collections",
+            "dataclasses", "enum", "pytest", "ruff", "mypy", "semgrep",
+        }
+
         filtered_names: set[str] = set()
         for name in expected_names:
             if name in _BUILTINS:
                 continue
             if name.lower() in param_names:
+                continue
+            if name.lower() in _LIB_NAMES:
+                continue
+            nl = name.lower()
+            if any(nl.endswith(s) for s in _OOP_SUFFIXES):
+                continue
+            if any(nl.startswith(p) for p in _OOP_PREFIXES):
                 continue
             if "_" in name or (name[0].isupper() and len(name) > 1):
                 filtered_names.add(name)
@@ -705,32 +1468,48 @@ class WatcherAgent(BaseAgent):
         if not expected_names:
             return []
 
-        # --- Step 2: Extract defined names from ALL workspace .py files ---
-        # In project mode, a task's spec may reference classes/functions from
-        # other modules (e.g. "Task" from models.py in filters.py's spec).
-        # Scan the entire workspace so cross-module imports aren't flagged.
+        # --- Step 2: Extract defined names from ALL workspace files ---
+        from pmca.utils.lang import detect_language, get_extension
+        lang = detect_language(task)
+        ext = get_extension(lang)
+        
         defined_names: set[str] = set()
         ws = Path(self._workspace_path)
-        scan_files = list(ws.rglob("*.py"))
+        scan_files = list(ws.rglob(f"*{ext}"))
         # Exclude __pycache__ and .pmca dirs
         scan_files = [f for f in scan_files
                       if "__pycache__" not in str(f) and ".pmca" not in str(f)]
 
         for file_path in scan_files:
-            try:
-                tree = ast.parse(file_path.read_text())
-            except SyntaxError:
-                continue
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    defined_names.add(node.name.lower())
-                elif isinstance(node, ast.AsyncFunctionDef):
-                    defined_names.add(node.name.lower())
-                elif isinstance(node, ast.ClassDef):
-                    defined_names.add(node.name)
-                    for item in ast.walk(node):
-                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            defined_names.add(item.name.lower())
+            content = file_path.read_text(errors="ignore")
+            if lang == "python":
+                try:
+                    tree = ast.parse(content)
+                except SyntaxError:
+                    continue
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        defined_names.add(node.name.lower())
+                    elif isinstance(node, ast.ClassDef):
+                        defined_names.add(node.name)
+                        for item in node.body:
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                defined_names.add(item.name.lower())
+            else:
+                # Multi-language regex: catches classes, functions, and methods
+                # Matches: class X, function Y, func Z, export class A, interface B
+                # Also matches method definitions like: methodName(...) {
+                pattern = re.compile(
+                    r"(?:class|function|async function|export function|export class|"
+                    r"const|func|interface)\s+(\w+)|"
+                    r"(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>\[\]|]+\s*)?[{]",
+                    re.MULTILINE
+                )
+                for m in pattern.finditer(content):
+                    name = m.group(1) or m.group(2)
+                    if name:
+                        defined_names.add(name.lower())
+                        defined_names.add(name)  # Keep case for PascalCase check
 
         # --- Step 3: Find missing names ---
         missing: list[str] = []
@@ -742,25 +1521,87 @@ class WatcherAgent(BaseAgent):
         return missing
 
     async def run_tests(self, task: TaskNode) -> TestResult:
-        """Execute tests for a task and report results."""
+        """Execute tests for a task and report results (supports Python, Go, TS)."""
         if not task.test_files:
             return TestResult(
-                passed=True,
-                total=0,
-                failures=0,
-                output="No test files to run",
-                errors=[],
+                passed=True, total=0, failures=0,
+                output="No test files to run", errors=[],
             )
 
-        # Filter to only .py test files
+        # 1. Detect language from test files
+        test_files = list(task.test_files.keys())
+        is_go = any(f.endswith(".go") for f in test_files)
+        is_ts = any(f.endswith(".ts") or f.endswith(".js") for f in test_files)
+        
+        if is_go:
+            return await self._run_go_tests(task)
+        if is_ts:
+            return await self._run_ts_tests(task)
+            
+        # Default: Python / Pytest
+        return await self._run_python_tests(task)
+
+    async def _run_go_tests(self, task: TaskNode) -> TestResult:
+        """Execute Go tests using 'go test'."""
+        try:
+            ws_abs = Path(self._workspace_path).resolve()
+            # Ensure go.mod exists
+            go_mod = ws_abs / "go.mod"
+            if not go_mod.exists():
+                from pmca.utils.lang import detect_language
+                # Create a minimal module file
+                go_mod.write_text("module pmca_workspace\n\ngo 1.21\n")
+
+            proc = await asyncio.create_subprocess_exec(
+                "go", "test", "-v", "./...",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(ws_abs),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            output = stdout.decode() + stderr.decode()
+            passed = proc.returncode == 0
+            return TestResult(
+                passed=passed, total=1, failures=0 if passed else 1,
+                output=output, errors=[] if passed else ["Go test failed"],
+            )
+        except Exception as exc:
+            return TestResult(passed=False, total=0, failures=0, output=str(exc), errors=[str(exc)])
+
+    async def _run_ts_tests(self, task: TaskNode) -> TestResult:
+        """Execute TypeScript tests using ts-node or basic node execution."""
+        try:
+            ws_abs = Path(self._workspace_path).resolve()
+            # 1. First, ensure dependencies are somewhat sane (minimal check)
+            # 2. Try to run any test files found using ts-node
+            test_files = [f for f in task.test_files if f.endswith(".ts")]
+            if not test_files:
+                return TestResult(passed=True, total=0, failures=0, output="No TS tests", errors=[])
+
+            # Use npx ts-node to execute the first test file as a smoke test
+            # In a full system, this would use npx jest or similar.
+            proc = await asyncio.create_subprocess_exec(
+                "npx", "ts-node", "--transpile-only", test_files[0],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(ws_abs),
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            output = stdout.decode() + stderr.decode()
+            passed = proc.returncode == 0
+            return TestResult(
+                passed=passed, total=1, failures=0 if passed else 1,
+                output=output, errors=[] if passed else ["TypeScript execution failed"],
+            )
+        except Exception as exc:
+            return TestResult(passed=False, total=0, failures=0, output=str(exc), errors=[str(exc)])
+
+    async def _run_python_tests(self, task: TaskNode) -> TestResult:
+        """Original pytest logic (renamed)."""
         py_tests = [f for f in task.test_files if f.endswith(".py")]
         if not py_tests:
-            return TestResult(
-                passed=True, total=0, failures=0,
-                output="No Python test files to run",
-                errors=[],
-            )
-
+            return TestResult(passed=True, total=0, failures=0, output="No Python tests", errors=[])
+            
         python_exe = self._find_python()
         try:
             ws_abs = Path(self._workspace_path).resolve()
@@ -775,24 +1616,14 @@ class WatcherAgent(BaseAgent):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
             output = stdout.decode() + stderr.decode()
-
             passed = proc.returncode == 0
-            # Parse pytest output for counts
             total, failures = self._parse_pytest_output(output)
-
             return TestResult(
-                passed=passed,
-                total=total,
-                failures=failures,
-                output=output,
-                errors=[] if passed else self._extract_errors(output),
+                passed=passed, total=total, failures=failures,
+                output=output, errors=[] if passed else self._extract_errors(output),
             )
-        except asyncio.TimeoutError:
-            return TestResult(
-                passed=False, total=0, failures=0,
-                output="Test execution timed out (60s)",
-                errors=["Timeout"],
-            )
+        except Exception as exc:
+            return TestResult(passed=False, total=0, failures=0, output=str(exc), errors=[str(exc)])
         except FileNotFoundError:
             return TestResult(
                 passed=False, total=0, failures=0,
@@ -992,6 +1823,179 @@ class WatcherAgent(BaseAgent):
                 ))
 
         return errors[:10]
+
+    @staticmethod
+    def extract_lesson(
+        attempt: int,
+        review: ReviewResult,
+        structured_errors: list[TestError],
+        strategy: str,
+    ) -> "LessonRecord":
+        """Distill a failed attempt into an abstract LessonRecord.
+
+        Extracts error types and builds a concise summary from up to 3
+        structured errors.  Never includes raw traces — only abstracted
+        information suitable for prompt injection.
+        """
+        from pmca.tasks.state import LessonRecord
+
+        # Collect unique error types (cap at 3)
+        error_types: list[str] = []
+        seen: set[str] = set()
+        for err in structured_errors[:3]:
+            if err.error_type not in seen:
+                error_types.append(err.error_type)
+                seen.add(err.error_type)
+
+        # Build concise summary from structured errors
+        parts: list[str] = []
+        for err in structured_errors[:3]:
+            snippet = err.test_name
+            if err.actual_value is not None and err.expected_value is not None:
+                snippet += f" (got {err.actual_value}, expected {err.expected_value})"
+            elif err.source_line:
+                line = err.source_line[:80]
+                snippet += f": {line}"
+            parts.append(snippet)
+
+        # Fallback to review issues if no structured errors
+        if not parts and review.issues:
+            for issue in review.issues[:3]:
+                parts.append(issue[:80])
+
+        summary = "; ".join(parts) if parts else "No specific details captured"
+
+        return LessonRecord(
+            attempt=attempt,
+            error_types=error_types,
+            strategy=strategy,
+            summary=summary,
+        )
+
+    async def targeted_micro_fix(
+        self,
+        task: TaskNode,
+        structured_errors: list[TestError],
+    ) -> int:
+        """Attempt surgical LLM fix for single-function errors.
+
+        For each error with a clear traceback pointing to a specific function,
+        extracts just that function, sends a minimal prompt to the LLM,
+        and splices the fix back.  Returns the number of functions fixed.
+
+        This runs BEFORE the full coder.fix() as a cheap pre-pass.
+        """
+        if not self._workspace_path or not task.code_files:
+            return 0
+
+        workspace = Path(self._workspace_path)
+
+        # Filter to fixable error types in code (not test) files
+        fixable_types = {"TypeError", "KeyError", "AttributeError", "IndexError",
+                         "ValueError", "ZeroDivisionError", "AssertionError"}
+        candidates = [
+            e for e in structured_errors
+            if e.error_type in fixable_types
+        ]
+        if not candidates:
+            return 0
+
+        # Only non-test code files
+        code_files = [f for f in task.code_files if not f.startswith("test")]
+
+        fixed_count = 0
+        seen_functions: set[tuple[str, str]] = set()  # (file, func) already fixed
+
+        for error in candidates[:3]:  # Cap at 3 micro-fixes
+            loc = self._parse_error_location(error, workspace, code_files)
+            if loc is None:
+                continue
+
+            file_path, func_name = loc
+            if (file_path, func_name) in seen_functions:
+                continue
+            seen_functions.add((file_path, func_name))
+
+            abs_path = workspace / file_path
+            if not abs_path.exists():
+                continue
+
+            try:
+                source = abs_path.read_text()
+            except OSError:
+                continue
+
+            result = self._extract_function_source(source, func_name)
+            if result is None:
+                continue
+
+            func_body, start_line, end_line = result
+
+            # Build source context from error
+            source_ctx = ""
+            if error.source_line:
+                source_ctx = f"Failing line: {error.source_line}"
+            if error.actual_value is not None and error.expected_value is not None:
+                source_ctx += f"\nActual: {error.actual_value}, Expected: {error.expected_value}"
+
+            error_detail = ""
+            if error.traceback:
+                # Extract just the last line of the traceback (the actual error message)
+                tb_lines = error.traceback.strip().splitlines()
+                error_detail = tb_lines[-1] if tb_lines else ""
+            elif error.source_line:
+                error_detail = error.source_line
+
+            prompt = prompts.MICRO_FIX_PROMPT.format(
+                test_name=error.test_name,
+                error_type=error.error_type,
+                error_detail=error_detail,
+                source_context=source_ctx,
+                file_path=file_path,
+                function_body=func_body,
+                spec=task.spec[:1000] if task.spec else "(no spec)",
+            )
+
+            try:
+                response = await self._generate(
+                    prompt,
+                    system=prompts.MICRO_FIX_SYSTEM,
+                    temperature=0.1,
+                )
+
+                # Parse the fixed function from the response
+                fixed_func = self._extract_code_from_response(response)
+                if not fixed_func or fixed_func.strip() == func_body.strip():
+                    continue
+
+                # Splice the fixed function back into the source
+                lines = source.splitlines()
+                fixed_lines = fixed_func.splitlines()
+                lines[start_line:end_line] = fixed_lines
+
+                new_source = "\n".join(lines)
+                # Verify it parses
+                ast.parse(new_source)
+                abs_path.write_text(new_source)
+                fixed_count += 1
+                self._log.info(
+                    f"Micro-fixed {func_name} in {file_path} "
+                    f"(error: {error.error_type})"
+                )
+            except Exception:
+                self._log.debug(f"Micro-fix failed for {func_name}")
+                continue
+
+        return fixed_count
+
+    @staticmethod
+    def _extract_code_from_response(response: str) -> str | None:
+        """Extract a single code block from an LLM response."""
+        # Match fenced code blocks
+        m = re.search(r"```(?:python)?\s*\n(.*?)```", response, re.DOTALL)
+        if m:
+            return m.group(1).rstrip()
+        return None
 
     async def calibrate_tests(self, task: TaskNode) -> int:
         """Run tests and fix assertion value mismatches.
@@ -1282,10 +2286,91 @@ class WatcherAgent(BaseAgent):
 
         return repaired
 
+    async def mutation_oracle(
+        self, task: TaskNode,
+    ) -> tuple[int, int, float]:
+        """Run mutation testing to validate test quality (MuTAP).
+
+        Generates AST mutations of each code file and runs tests against each
+        mutant.  A "killed" mutant means the tests detected the change.
+        Low kill ratio suggests hallucinated or weak test assertions.
+
+        Returns (total_mutants, killed, kill_ratio).
+        Only runs when tests currently pass.
+        """
+        if not task.code_files or not task.test_files or not self._workspace_path:
+            return 0, 0, 0.0
+
+        from pmca.utils.mutator import generate_mutations
+
+        py_tests = [f for f in task.test_files if f.endswith(".py")]
+        if not py_tests:
+            return 0, 0, 0.0
+
+        # Smoke test: only run mutation oracle if tests currently pass
+        smoke = await self.run_tests(task)
+        if not smoke.passed:
+            return 0, 0, 0.0
+
+        python_exe = self._find_python()
+        ws_abs = Path(self._workspace_path).resolve()
+        total = 0
+        killed = 0
+
+        code_files = [f for f in task.code_files if f.endswith(".py")]
+        for code_file in code_files:
+            code_path = ws_abs / code_file
+            if not code_path.exists():
+                continue
+
+            original_source = code_path.read_text()
+            mutations = generate_mutations(original_source, max_mutations=8)
+
+            for mutation in mutations:
+                total += 1
+                try:
+                    # Write mutant
+                    code_path.write_text(mutation.mutated_source)
+
+                    # Run tests with 5s timeout
+                    proc = await asyncio.create_subprocess_exec(
+                        python_exe, "-m", "pytest", *py_tests,
+                        "-x", "--tb=no", "--no-header", "-q",
+                        f"--rootdir={ws_abs}",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=str(ws_abs),
+                        env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
+                    )
+                    try:
+                        await asyncio.wait_for(proc.communicate(), timeout=5)
+                    except asyncio.TimeoutError:
+                        # Timeout counts as killed (mutant caused infinite loop)
+                        try:
+                            proc.kill()
+                        except ProcessLookupError:
+                            pass
+                        killed += 1
+                        continue
+
+                    if proc.returncode != 0:
+                        killed += 1
+                finally:
+                    # Always restore original
+                    code_path.write_text(original_source)
+
+        kill_ratio = killed / total if total > 0 else 0.0
+        self._log.info(
+            f"Mutation oracle: {killed}/{total} killed "
+            f"(ratio={kill_ratio:.0%})"
+        )
+        return total, killed, kill_ratio
+
     async def check_not_faked(self, code: str, tests: str) -> ReviewResult:
         """Verify code isn't trivially faking test passage."""
         prompt = prompts.CHECK_NOT_FAKED_PROMPT.format(code=code, tests=tests)
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system)
         return self._parse_review(response)
 
     async def final_verification(self, root_task: TaskNode, original_request: str,
@@ -1296,7 +2381,8 @@ class WatcherAgent(BaseAgent):
             project_structure=project_structure,
             key_files=key_files,
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system)
         return self._parse_review(response)
 
     def _parse_review(self, response: str) -> ReviewResult:

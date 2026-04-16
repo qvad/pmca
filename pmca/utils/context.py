@@ -113,23 +113,103 @@ class ContextManager:
             except KeyError:
                 pass
 
-        # Priority 3: Library documentation from RAG
+        # Priority 3: Design Pattern Hints (Knowledge-Augmented Architecture)
+        pattern_hints = self._get_pattern_hints(task)
+        if pattern_hints:
+            sections.append(("Design Pattern Reference", pattern_hints, 3))
+
+        # Priority 4: Library documentation from RAG
         if self._rag_manager is not None:
             query_text = task.spec or task.title
             rag_chunks = self._rag_manager.query(query_text)
             if rag_chunks:
                 rag_text = "\n\n---\n\n".join(rag_chunks)
-                sections.append(("Library Documentation", rag_text, 3))
+                sections.append(("Library Documentation", rag_text, 4))
 
         # Priority 4: Sibling summaries (enhanced for project mode)
         if task.parent_id:
             siblings = self._tree.get_siblings(task.id)
             if siblings:
                 sibling_text = self._build_sibling_text(siblings)
-                sections.append(("Sibling Tasks", sibling_text, 4))
+                sections.append(("Sibling Task Specifications", sibling_text, 4))
+
+        # Priority 5: Reference Code (Actual code from verified siblings)
+        if self._project_mode and task.parent_id:
+            verified_code = self._build_verified_code_context(task)
+            if verified_code:
+                sections.append(("Verified Reference Code", verified_code, 5))
 
         # Build the context, truncating lower-priority items if needed
         return self._assemble(sections, max_chars)
+
+    def _get_pattern_hints(self, task: TaskNode) -> str:
+        """Heuristic-based design pattern retrieval from knowledge base."""
+        text = (task.title + (task.spec or "")).lower()
+        hints = []
+        
+        # Simple keyword mapping
+        # In a real RAG setup, this would be a vector search.
+        # Here we use high-signal heuristics.
+        if any(kw in text for kw in ["api", "client", "request", "fetch"]):
+            hints.append("Repository Pattern")
+        if any(kw in text for kw in ["async", "event", "observer", "subscribe", "notify"]):
+            hints.append("Observer Pattern")
+        if any(kw in text for kw in ["strategy", "interchangeable", "algorithm", "choice"]):
+            hints.append("Strategy Pattern")
+        if any(kw in text for kw in ["create", "instantiate", "factory", "builder"]):
+            hints.append("Factory Method")
+        if any(kw in text for kw in ["middleware", "chain", "process", "pipeline"]):
+            hints.append("Middleware / Chain of Responsibility")
+
+        if not hints:
+            return ""
+
+        # Load from knowledge base
+        from pathlib import Path
+        kb_path = Path(__file__).parent.parent / "knowledge_base" / "patterns.md"
+        if not kb_path.exists():
+            return ""
+
+        content = kb_path.read_text()
+        extracted = []
+        for hint in hints:
+            # 1. Text description
+            pattern = re.compile(rf"## \d+\. {re.escape(hint)}.*?(?=##|\Z)", re.DOTALL)
+            match = pattern.search(content)
+            if match:
+                extracted.append(match.group(0).strip())
+            
+            # 2. Code skeleton (if exists)
+            skeleton_name = hint.lower().split(" ")[0]
+            # Map specific names to skeleton files
+            skel_map = {
+                "observer": "observer.py",
+                "strategy": "strategy.py",
+                "repository": "repository.py",
+                "factory": "factory.py"
+            }
+            if skeleton_name in skel_map:
+                skel_path = kb_path.parent / "skeletons" / skel_map[skeleton_name]
+                if skel_path.exists():
+                    skel_code = skel_path.read_text()
+                    extracted.append(f"### {hint} Boilerplate Skeleton:\n```python\n{skel_code}\n```")
+        
+        return "\n\n".join(extracted) if extracted else ""
+
+    def _build_verified_code_context(self, task: TaskNode) -> str:
+        """Fetch actual source code for verified sibling tasks."""
+        parts: list[str] = []
+        siblings = self._tree.get_siblings(task.id)
+        
+        # We need a way to read files. Since ContextManager doesn't have 
+        # a FileManager reference, we rely on the TaskNode's cached snippets 
+        # or the orchestrator's workspace. For now, let's look at child.code_files.
+        for s in siblings:
+            if s.status == TaskStatus.VERIFIED and s.code_files:
+                for file_path, content in s.code_files.items():
+                    parts.append(f"### File: {file_path}\n```python\n{content}\n```")
+        
+        return "\n\n".join(parts)
 
     def _build_sibling_text(self, siblings: list[TaskNode]) -> str:
         """Build sibling context with interface-awareness for project mode."""

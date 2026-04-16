@@ -1,0 +1,37 @@
+# Production configuration for Qwen 3.5 Hybrid
+models:
+  architect:
+    name: "qwen3.5-coder-think"
+    think: true
+    temperature: 0.3
+  coder:
+    name: "qwen3.5-coder"
+    think: false
+    temperature: 0.2
+  coder_reasoning:
+    name: "qwen3.5-coder"
+    think: false
+    temperature: 0.2
+  reviewer:
+    name: "qwen3.5-coder"
+    think: false
+    temperature: 0.1
+  watcher:
+    name: "qwen3.5-coder"
+    think: false
+
+cascade:
+  max_depth: 2  # Allows for project mode decomposition
+  max_retries: 5
+  best_of_n: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+  cross_execution: true
+
+workspace:
+  path: "./workspace/production"
+  git_checkpoint: true
+
+logging:
+  level: "INFO"
+  file: "./production.log"

@@ -1,0 +1,154 @@
+[
+  {
+    "task_id": "site_generator",
+    "tier": "hard",
+    "category": "async + file io + templates",
+    "request": "Implement a SiteGenerator class that asynchronously converts a directory of Markdown files into HTML. Methods: scan(input_dir: str) returns list of .md files (recursive). parse_frontmatter(content: str) -> tuple[dict, str] extracts YAML front-matter between --- delimiters and returns (metadata_dict, body). apply_template(body: str, meta: dict, template: str) -> str replaces {{title}}, {{date}}, and {{content}} placeholders in the template. build(input_dir: str, output_dir: str, template: str) async method that orchestrates the full build using asyncio.gather. Use only PyYAML for YAML parsing. For Markdown to HTML, handle # Heading -> <h1>Heading</h1> and wrap paragraphs in <p>. Handle FileNotFoundError and yaml.YAMLError. The class should be importable as 'from site_generator import SiteGenerator'.",
+    "probes": [
+      {
+        "name": "import",
+        "code": "from site_generator import SiteGenerator; gen = SiteGenerator()"
+      },
+      {
+        "name": "scan_finds_md_files",
+        "code": "import tempfile, os\nfrom site_generator import SiteGenerator\nwith tempfile.TemporaryDirectory() as d:\n    open(os.path.join(d, 'a.md'), 'w').write('# A')\n    open(os.path.join(d, 'b.md'), 'w').write('# B')\n    open(os.path.join(d, 'c.txt'), 'w').write('not markdown')\n    files = SiteGenerator().scan(d)\n    md_files = [os.path.basename(f) for f in files]\n    assert 'a.md' in md_files\n    assert 'b.md' in md_files\n    assert 'c.txt' not in md_files"
+      },
+      {
+        "name": "parse_frontmatter_basic",
+        "code": "from site_generator import SiteGenerator\ncontent = '---\\ntitle: Hello\\ndate: 2026-01-01\\n---\\n# Body content'\nmeta, body = SiteGenerator().parse_frontmatter(content)\nassert isinstance(meta, dict)\nassert meta.get('title') == 'Hello'\nassert '# Body content' in body"
+      },
+      {
+        "name": "parse_frontmatter_no_meta",
+        "code": "from site_generator import SiteGenerator\ncontent = '# Just a body, no frontmatter'\nmeta, body = SiteGenerator().parse_frontmatter(content)\nassert meta == {} or meta is None or len(meta) == 0\nassert '# Just a body' in body"
+      },
+      {
+        "name": "apply_template",
+        "code": "from site_generator import SiteGenerator\nresult = SiteGenerator().apply_template('hello world', {'title': 'My Page', 'date': '2026-01-01'}, '<h1>{{title}}</h1><p>{{date}}</p><div>{{content}}</div>')\nassert 'My Page' in result\nassert '2026-01-01' in result\nassert 'hello world' in result"
+      },
+      {
+        "name": "build_creates_output",
+        "code": "import asyncio, tempfile, os\nfrom site_generator import SiteGenerator\nasync def main():\n    with tempfile.TemporaryDirectory() as d:\n        in_dir = os.path.join(d, 'in')\n        out_dir = os.path.join(d, 'out')\n        os.makedirs(in_dir)\n        os.makedirs(out_dir)\n        with open(os.path.join(in_dir, 'page.md'), 'w') as f:\n            f.write('---\\ntitle: Test\\ndate: 2026-01-01\\n---\\n# Hello')\n        await SiteGenerator().build(in_dir, out_dir, '<html>{{content}}</html>')\n        outputs = os.listdir(out_dir)\n        assert len(outputs) >= 1, f'Expected output files in {out_dir}, got {outputs}'\nasyncio.run(main())"
+      },
+      {
+        "name": "handles_missing_dir",
+        "code": "from site_generator import SiteGenerator\ntry:\n    SiteGenerator().scan('/nonexistent/path/that/does/not/exist')\nexcept (FileNotFoundError, OSError):\n    pass\nelse:\n    raised = False\n    # Either raises or returns empty list — both acceptable\n    pass"
+      }
+    ]
+  },
+  {
+    "task_id": "resilient_api_client",
+    "tier": "hard",
+    "category": "async + concurrency + retry",
+    "request": "Create a ResilientApiClient class for a REST API. Constructor: __init__(base_url: str, rate_limit: int) where rate_limit is max requests per second. Methods: fetch_data(endpoint: str) -> dict performs an async GET request using httpx and returns parsed JSON. Implement an internal TokenBucket to enforce the rate limit. Implement exponential backoff retry logic (up to 3 retries) for HTTP 429 and 5xx status codes. fetch_all(endpoints: list[str]) -> list[dict] fetches multiple endpoints concurrently while strictly respecting the rate limit. The class must be importable as 'from resilient_api_client import ResilientApiClient'. The TokenBucket should be a separate inner class or top-level class.",
+    "probes": [
+      {
+        "name": "import",
+        "code": "from resilient_api_client import ResilientApiClient; c = ResilientApiClient('http://example.com', rate_limit=5)"
+      },
+      {
+        "name": "has_token_bucket",
+        "code": "import resilient_api_client\nimport inspect\nmembers = [name for name, obj in inspect.getmembers(resilient_api_client) if inspect.isclass(obj)]\n# TokenBucket may be a top-level class or inner class\nhas_bucket = any('Bucket' in m or 'bucket' in m.lower() for m in members)\n# or check for it as an attribute on the client\nfrom resilient_api_client import ResilientApiClient\nclient = ResilientApiClient('http://test', rate_limit=10)\nattrs = dir(client)\nhas_rate_logic = any('bucket' in a.lower() or 'token' in a.lower() or 'limit' in a.lower() or 'last' in a.lower() for a in attrs)\nassert has_bucket or has_rate_logic, f'No rate limit infrastructure found. Classes: {members}, Attrs: {[a for a in attrs if not a.startswith(\"_\")]}'"
+      },
+      {
+        "name": "rate_limit_stored",
+        "code": "from resilient_api_client import ResilientApiClient\nc = ResilientApiClient('http://test', rate_limit=10)\n# rate_limit should be accessible somehow\nfound = False\nfor attr in dir(c):\n    if not attr.startswith('_'):\n        try:\n            val = getattr(c, attr)\n            if val == 10:\n                found = True\n                break\n        except Exception:\n            pass\n# Or via internal\nfor attr in ['rate_limit', '_rate_limit', 'rps', '_rps']:\n    if hasattr(c, attr) and getattr(c, attr) == 10:\n        found = True\nassert found, 'rate_limit value 10 not stored on instance'"
+      },
+      {
+        "name": "fetch_data_is_async",
+        "code": "from resilient_api_client import ResilientApiClient\nimport inspect\nc = ResilientApiClient('http://test', rate_limit=10)\nassert inspect.iscoroutinefunction(c.fetch_data), 'fetch_data must be async'"
+      },
+      {
+        "name": "fetch_all_is_async",
+        "code": "from resilient_api_client import ResilientApiClient\nimport inspect\nc = ResilientApiClient('http://test', rate_limit=10)\nassert inspect.iscoroutinefunction(c.fetch_all), 'fetch_all must be async'"
+      },
+      {
+        "name": "fetch_data_works_with_mock",
+        "code": "import asyncio, json\nfrom unittest.mock import patch, AsyncMock, MagicMock\nfrom resilient_api_client import ResilientApiClient\n\nasync def main():\n    c = ResilientApiClient('http://test.example', rate_limit=10)\n    mock_response = MagicMock()\n    mock_response.status_code = 200\n    mock_response.json = MagicMock(return_value={'ok': True, 'value': 42})\n    mock_response.raise_for_status = MagicMock()\n    \n    with patch('httpx.AsyncClient') as mock_client:\n        instance = mock_client.return_value.__aenter__.return_value\n        instance.get = AsyncMock(return_value=mock_response)\n        result = await c.fetch_data('/api/test')\n        assert isinstance(result, dict)\n        assert result.get('ok') is True or result.get('value') == 42\n\nasyncio.run(main())"
+      },
+      {
+        "name": "fetch_all_returns_list",
+        "code": "import asyncio\nfrom unittest.mock import patch, AsyncMock, MagicMock\nfrom resilient_api_client import ResilientApiClient\n\nasync def main():\n    c = ResilientApiClient('http://test.example', rate_limit=10)\n    mock_response = MagicMock()\n    mock_response.status_code = 200\n    mock_response.json = MagicMock(return_value={'data': 1})\n    mock_response.raise_for_status = MagicMock()\n    \n    with patch('httpx.AsyncClient') as mock_client:\n        instance = mock_client.return_value.__aenter__.return_value\n        instance.get = AsyncMock(return_value=mock_response)\n        results = await c.fetch_all(['/a', '/b', '/c'])\n        assert isinstance(results, list)\n        assert len(results) == 3\n\nasyncio.run(main())"
+      },
+      {
+        "name": "retries_on_5xx",
+        "code": "import asyncio\nfrom unittest.mock import patch, AsyncMock, MagicMock\nfrom resilient_api_client import ResilientApiClient\n\nasync def main():\n    c = ResilientApiClient('http://test.example', rate_limit=100)\n    \n    # Sequence: 500, 500, 200\n    responses = []\n    for status in [500, 500, 200]:\n        r = MagicMock()\n        r.status_code = status\n        r.json = MagicMock(return_value={'attempt': status})\n        if status >= 400:\n            from httpx import HTTPStatusError, Request, Response\n            err_response = Response(status, request=Request('GET', 'http://test'))\n            r.raise_for_status = MagicMock(side_effect=HTTPStatusError('', request=err_response.request, response=err_response))\n        else:\n            r.raise_for_status = MagicMock()\n        responses.append(r)\n    \n    call_count = [0]\n    async def mock_get(*args, **kwargs):\n        idx = min(call_count[0], len(responses) - 1)\n        call_count[0] += 1\n        return responses[idx]\n    \n    with patch('httpx.AsyncClient') as mock_client:\n        instance = mock_client.return_value.__aenter__.return_value\n        instance.get = AsyncMock(side_effect=mock_get)\n        try:\n            result = await c.fetch_data('/api/flaky')\n            # Should have retried and eventually succeeded or failed\n            assert call_count[0] >= 2, f'Expected retries, only got {call_count[0]} calls'\n        except Exception:\n            # Acceptable if it gives up after 3 retries\n            assert call_count[0] >= 2\n\nasyncio.run(main())"
+      }
+    ]
+  },
+  {
+    "task_id": "portfolio_analyzer",
+    "tier": "hard",
+    "category": "data analysis + math + io",
+    "request": "Implement a PortfolioAnalyzer class for processing investment data from CSV files. Methods: load_csv(path: str) loads rows with columns date, ticker, price, quantity (date is YYYY-MM-DD string, price and quantity are numeric). calculate_returns() -> dict returns a dict mapping ticker -> dict with keys 'daily_returns' (list of floats) and 'cumulative_return' (float). get_metrics() -> dict returns a dict mapping ticker -> dict with keys 'sharpe_ratio' (float, assume risk-free rate of 0.02), 'max_drawdown' (float, as positive number), 'volatility' (float, std dev of daily returns). rebalance(target_weights: dict) -> list[dict] takes a dict of ticker -> target percentage and returns a list of action dicts each with keys 'ticker', 'action' ('buy' or 'sell'), 'shares' (int). Handle ZeroDivisionError and skip rows with missing data. The class should be importable as 'from portfolio_analyzer import PortfolioAnalyzer'.",
+    "probes": [
+      {
+        "name": "import",
+        "code": "from portfolio_analyzer import PortfolioAnalyzer; pa = PortfolioAnalyzer()"
+      },
+      {
+        "name": "load_csv",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    f.write('2026-01-01,AAPL,150.0,10\\n')\n    f.write('2026-01-02,AAPL,152.0,10\\n')\n    f.write('2026-01-03,AAPL,151.0,10\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\n# Should have loaded data — check via calculate_returns\nreturns = pa.calculate_returns()\nassert 'AAPL' in returns"
+      },
+      {
+        "name": "calculate_returns_structure",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    f.write('2026-01-01,AAPL,100.0,10\\n')\n    f.write('2026-01-02,AAPL,110.0,10\\n')\n    f.write('2026-01-03,AAPL,121.0,10\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\nreturns = pa.calculate_returns()\nassert 'AAPL' in returns\naapl = returns['AAPL']\nassert isinstance(aapl, dict)\n# Should have daily_returns and cumulative_return keys\nassert 'cumulative_return' in aapl or any('cumulative' in k for k in aapl.keys())"
+      },
+      {
+        "name": "calculate_returns_math",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    f.write('2026-01-01,AAPL,100.0,10\\n')\n    f.write('2026-01-02,AAPL,110.0,10\\n')\n    f.write('2026-01-03,AAPL,121.0,10\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\nreturns = pa.calculate_returns()\naapl = returns['AAPL']\n# Cumulative return from 100 to 121 = 0.21 (21%)\ncum_key = 'cumulative_return' if 'cumulative_return' in aapl else next((k for k in aapl if 'cumulative' in k), None)\nassert cum_key, f'No cumulative key in {aapl.keys()}'\ncum = aapl[cum_key]\nassert 0.18 <= cum <= 0.24, f'Expected ~0.21, got {cum}'"
+      },
+      {
+        "name": "metrics_structure",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    for i in range(10):\n        f.write(f'2026-01-{i+1:02d},AAPL,{100+i*2}.0,10\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\nmetrics = pa.get_metrics()\nassert 'AAPL' in metrics\naapl_m = metrics['AAPL']\n# Should have sharpe_ratio, max_drawdown, volatility\nkeys_lower = [k.lower() for k in aapl_m.keys()]\nassert any('sharpe' in k for k in keys_lower), f'No sharpe key in {aapl_m.keys()}'\nassert any('drawdown' in k for k in keys_lower), f'No drawdown key in {aapl_m.keys()}'\nassert any('volatility' in k or 'vol' in k for k in keys_lower), f'No volatility key in {aapl_m.keys()}'"
+      },
+      {
+        "name": "rebalance_returns_actions",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    f.write('2026-01-01,AAPL,100.0,10\\n')\n    f.write('2026-01-01,GOOG,200.0,5\\n')\n    f.write('2026-01-02,AAPL,100.0,10\\n')\n    f.write('2026-01-02,GOOG,200.0,5\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\nactions = pa.rebalance({'AAPL': 0.7, 'GOOG': 0.3})\nassert isinstance(actions, list)\nfor action in actions:\n    assert isinstance(action, dict)\n    assert 'ticker' in action\n    assert 'action' in action\n    assert action['action'] in ('buy', 'sell')"
+      },
+      {
+        "name": "handles_missing_data",
+        "code": "import tempfile, os\nfrom portfolio_analyzer import PortfolioAnalyzer\nwith tempfile.NamedTemporaryFile('w', suffix='.csv', delete=False) as f:\n    f.write('date,ticker,price,quantity\\n')\n    f.write('2026-01-01,AAPL,100.0,10\\n')\n    f.write('2026-01-02,AAPL,,10\\n')  # missing price\n    f.write('2026-01-03,AAPL,120.0,10\\n')\n    path = f.name\npa = PortfolioAnalyzer()\npa.load_csv(path)\nos.unlink(path)\n# Should not crash on missing data\nreturns = pa.calculate_returns()\nassert 'AAPL' in returns"
+      }
+    ]
+  },
+  {
+    "task_id": "minimal_blockchain",
+    "tier": "hard",
+    "category": "algorithms + crypto + integrity",
+    "request": "Create a MinimalBlockchain system. Define a Block class with attributes: index (int), timestamp (float or str), data (str), previous_hash (str), hash (str), and nonce (int). Define a top-level function compute_hash(block) -> str that uses hashlib.sha256 on a string representation of the block (combine index, timestamp, data, previous_hash, nonce). Define a top-level function mine_block(block, difficulty: int) that implements proof of work — increment nonce until block.hash starts with 'difficulty' number of zeros, then set block.hash. Define a Blockchain class with: __init__() that creates a genesis block automatically, add_block(data: str) which creates a new Block linking to the previous and mines it with difficulty=2, is_chain_valid() -> bool which re-verifies all hashes and previous_hash links. The classes should be importable as 'from minimal_blockchain import Block, Blockchain, compute_hash, mine_block'.",
+    "probes": [
+      {
+        "name": "imports",
+        "code": "from minimal_blockchain import Block, Blockchain"
+      },
+      {
+        "name": "block_creation",
+        "code": "from minimal_blockchain import Block\nb = Block(index=1, timestamp=12345.0, data='test', previous_hash='abc', hash='', nonce=0)\nassert b.index == 1\nassert b.data == 'test'\nassert b.previous_hash == 'abc'"
+      },
+      {
+        "name": "compute_hash",
+        "code": "from minimal_blockchain import Block, compute_hash\nb = Block(index=1, timestamp=12345.0, data='test', previous_hash='abc', hash='', nonce=0)\nh = compute_hash(b)\nassert isinstance(h, str)\nassert len(h) == 64, f'Expected SHA256 hash (64 hex chars), got {len(h)}'\n# Should be deterministic\nassert compute_hash(b) == h"
+      },
+      {
+        "name": "mine_block_finds_nonce",
+        "code": "from minimal_blockchain import Block, mine_block\nb = Block(index=1, timestamp=12345.0, data='test', previous_hash='abc', hash='', nonce=0)\nmine_block(b, difficulty=2)\nassert b.hash.startswith('00'), f'Hash should start with 00, got {b.hash[:10]}'\nassert b.nonce > 0"
+      },
+      {
+        "name": "blockchain_genesis",
+        "code": "from minimal_blockchain import Blockchain\nbc = Blockchain()\n# Should have a genesis block\nassert hasattr(bc, 'chain') or hasattr(bc, 'blocks') or hasattr(bc, '_chain')\n# Find the chain attribute\nchain = getattr(bc, 'chain', None) or getattr(bc, 'blocks', None) or getattr(bc, '_chain', None)\nassert chain is not None\nassert len(chain) >= 1, 'Genesis block missing'"
+      },
+      {
+        "name": "add_block_links",
+        "code": "from minimal_blockchain import Blockchain\nbc = Blockchain()\nbc.add_block('first')\nbc.add_block('second')\nchain = getattr(bc, 'chain', None) or getattr(bc, 'blocks', None) or getattr(bc, '_chain', None)\nassert len(chain) >= 3, f'Expected 3 blocks (genesis + 2), got {len(chain)}'\n# Each block should link to previous\nfor i in range(1, len(chain)):\n    assert chain[i].previous_hash == chain[i-1].hash, f'Block {i} previous_hash mismatch'"
+      },
+      {
+        "name": "chain_valid_after_add",
+        "code": "from minimal_blockchain import Blockchain\nbc = Blockchain()\nbc.add_block('a')\nbc.add_block('b')\nbc.add_block('c')\nassert bc.is_chain_valid() is True"
+      },
+      {
+        "name": "chain_invalid_after_tamper",
+        "code": "from minimal_blockchain import Blockchain\nbc = Blockchain()\nbc.add_block('a')\nbc.add_block('b')\nchain = getattr(bc, 'chain', None) or getattr(bc, 'blocks', None) or getattr(bc, '_chain', None)\n# Tamper with the data of the second block\nchain[1].data = 'TAMPERED'\nassert bc.is_chain_valid() is False"
+      }
+    ]
+  }
+]

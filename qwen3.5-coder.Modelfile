@@ -1,0 +1,7 @@
+FROM qwen3.5:9b
+
+# Basic parameters for better coding
+PARAMETER num_ctx 32768
+PARAMETER temperature 0.2
+PARAMETER top_k 20
+PARAMETER top_p 0.95

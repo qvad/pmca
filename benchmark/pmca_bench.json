@@ -1,0 +1,1173 @@
+[
+  {
+    "task_id": "calculator",
+    "tier": "simple",
+    "request": "Create a Calculator class with add, subtract, multiply, divide methods. Each takes two numeric arguments and returns the result. divide(a, 0) should raise ValueError.",
+    "probes": [
+      {
+        "name": "add",
+        "code": "from calculator import Calculator; c = Calculator(); assert c.add(2, 3) == 5"
+      },
+      {
+        "name": "subtract",
+        "code": "from calculator import Calculator; c = Calculator(); assert c.subtract(10, 4) == 6"
+      },
+      {
+        "name": "multiply",
+        "code": "from calculator import Calculator; c = Calculator(); assert c.multiply(3, 7) == 21"
+      },
+      {
+        "name": "divide",
+        "code": "from calculator import Calculator; c = Calculator(); assert c.divide(15, 3) == 5.0"
+      },
+      {
+        "name": "divide_zero",
+        "code": "from calculator import Calculator\nc = Calculator()\ntry:\n    c.divide(5, 0)\n    assert False, 'Should have raised ValueError'\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "negative",
+        "code": "from calculator import Calculator; c = Calculator(); assert c.add(-3, -7) == -10"
+      }
+    ]
+  },
+  {
+    "task_id": "stack",
+    "tier": "simple",
+    "request": "Create a Stack class with push(item), pop() -> item, peek() -> item, is_empty() -> bool, size() -> int methods. pop() and peek() on empty stack should raise IndexError.",
+    "probes": [
+      {
+        "name": "push_pop",
+        "code": "from stack import Stack\ns = Stack()\ns.push(42)\nassert s.pop() == 42\nassert s.is_empty()\n"
+      },
+      {
+        "name": "peek",
+        "code": "from stack import Stack; s = Stack(); s.push(99); assert s.peek() == 99; assert s.size() == 1"
+      },
+      {
+        "name": "size",
+        "code": "from stack import Stack\ns = Stack()\nassert s.size() == 0\ns.push(1); s.push(2); s.push(3)\nassert s.size() == 3\n"
+      },
+      {
+        "name": "lifo_order",
+        "code": "from stack import Stack\ns = Stack()\ns.push('a'); s.push('b'); s.push('c')\nassert s.pop() == 'c'\nassert s.pop() == 'b'\nassert s.pop() == 'a'\n"
+      },
+      {
+        "name": "empty_pop",
+        "code": "from stack import Stack\ns = Stack()\ntry:\n    s.pop()\n    assert False, 'Should raise IndexError'\nexcept IndexError:\n    pass\n"
+      },
+      {
+        "name": "empty_peek",
+        "code": "from stack import Stack\ns = Stack()\ntry:\n    s.peek()\n    assert False, 'Should raise IndexError'\nexcept IndexError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "word_count",
+    "tier": "simple",
+    "request": "Create a function word_count(text: str) -> dict[str, int] that counts occurrences of each word in the text. Words should be lowercased. Return an empty dict for empty string.",
+    "probes": [
+      {
+        "name": "basic",
+        "code": "from word_count import word_count; assert word_count('hello world hello') == {'hello': 2, 'world': 1}"
+      },
+      {
+        "name": "empty",
+        "code": "from word_count import word_count; assert word_count('') == {}"
+      },
+      {
+        "name": "case",
+        "code": "from word_count import word_count; assert word_count('Cat cat CAT') == {'cat': 3}"
+      },
+      {
+        "name": "single",
+        "code": "from word_count import word_count; assert word_count('alone') == {'alone': 1}"
+      }
+    ]
+  },
+  {
+    "task_id": "fizzbuzz",
+    "tier": "simple",
+    "request": "Create a function fizzbuzz(n: int) -> list[str] that returns a list of strings from 1 to n where: multiples of 3 are 'Fizz', multiples of 5 are 'Buzz', multiples of both are 'FizzBuzz', and other numbers are their string representation.",
+    "probes": [
+      {
+        "name": "fifteen",
+        "code": "from fizzbuzz import fizzbuzz\nresult = fizzbuzz(15)\nassert result[0] == '1'\nassert result[2] == 'Fizz'\nassert result[4] == 'Buzz'\nassert result[14] == 'FizzBuzz'\nassert len(result) == 15\n"
+      },
+      {
+        "name": "one",
+        "code": "from fizzbuzz import fizzbuzz; assert fizzbuzz(1) == ['1']"
+      },
+      {
+        "name": "three",
+        "code": "from fizzbuzz import fizzbuzz; assert fizzbuzz(3) == ['1', '2', 'Fizz']"
+      }
+    ]
+  },
+  {
+    "task_id": "text_stats",
+    "tier": "medium",
+    "request": "Create a TextStats class with methods: word_count(text) returns number of words (int), char_frequency(text) returns dict mapping each lowercase character to its count (skip spaces), most_common_word(text) returns the most frequent word (lowercased, return first alphabetically on tie), sentence_count(text) returns number of sentences (split on . ! ?). All methods should return 0, {}, '', or 0 respectively for empty string input.",
+    "probes": [
+      {
+        "name": "word_count",
+        "code": "from text_stats import TextStats; t = TextStats(); assert t.word_count('hello world foo') == 3"
+      },
+      {
+        "name": "word_count_empty",
+        "code": "from text_stats import TextStats; t = TextStats(); assert t.word_count('') == 0"
+      },
+      {
+        "name": "char_freq",
+        "code": "from text_stats import TextStats\nt = TextStats()\nfreq = t.char_frequency('aab')\nassert freq == {'a': 2, 'b': 1}\n"
+      },
+      {
+        "name": "char_freq_spaces",
+        "code": "from text_stats import TextStats\nt = TextStats()\nfreq = t.char_frequency('a b a')\nassert freq.get('a') == 2\nassert freq.get('b') == 1\nassert ' ' not in freq\n"
+      },
+      {
+        "name": "most_common",
+        "code": "from text_stats import TextStats; t = TextStats(); assert t.most_common_word('the cat and the dog') == 'the'"
+      },
+      {
+        "name": "sentence_count",
+        "code": "from text_stats import TextStats; t = TextStats(); assert t.sentence_count('Hello. World! Nice?') == 3"
+      },
+      {
+        "name": "sentence_empty",
+        "code": "from text_stats import TextStats; t = TextStats(); assert t.sentence_count('') == 0"
+      }
+    ]
+  },
+  {
+    "task_id": "bank_account",
+    "tier": "medium",
+    "request": "Create a BankAccount class. Constructor takes owner (str) and optional initial_balance (float, default 0). Methods: deposit(amount) adds to balance, withdraw(amount) subtracts (raise ValueError if insufficient funds), get_balance() returns current balance, transfer(other_account, amount) moves money between accounts, get_history() returns list of strings describing each transaction (e.g. 'deposit 100.0', 'withdraw 50.0', 'transfer out 25.0 to Bob', 'transfer in 25.0 from Alice').",
+    "probes": [
+      {
+        "name": "deposit",
+        "code": "from bank_account import BankAccount\na = BankAccount('Alice', 100)\na.deposit(50)\nassert a.get_balance() == 150\n"
+      },
+      {
+        "name": "withdraw",
+        "code": "from bank_account import BankAccount\na = BankAccount('Alice', 100)\na.withdraw(30)\nassert a.get_balance() == 70\n"
+      },
+      {
+        "name": "withdraw_insufficient",
+        "code": "from bank_account import BankAccount\na = BankAccount('Alice', 50)\ntry:\n    a.withdraw(100)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\nassert a.get_balance() == 50\n"
+      },
+      {
+        "name": "transfer",
+        "code": "from bank_account import BankAccount\na = BankAccount('Alice', 200)\nb = BankAccount('Bob', 50)\na.transfer(b, 75)\nassert a.get_balance() == 125\nassert b.get_balance() == 125\n"
+      },
+      {
+        "name": "history",
+        "code": "from bank_account import BankAccount\na = BankAccount('Alice', 0)\na.deposit(100)\na.withdraw(30)\nh = a.get_history()\nassert len(h) >= 2\nassert 'deposit' in h[0].lower()\nassert 'withdraw' in h[1].lower()\n"
+      }
+    ]
+  },
+  {
+    "task_id": "linked_list",
+    "tier": "medium",
+    "request": "Create a LinkedList class (singly linked) with methods: append(value), prepend(value), delete(value) removes first occurrence (raise ValueError if not found), find(value) -> bool, size() -> int, to_list() -> list. The list should maintain insertion order.",
+    "probes": [
+      {
+        "name": "append_list",
+        "code": "from linked_list import LinkedList\nll = LinkedList()\nll.append(1); ll.append(2); ll.append(3)\nassert ll.to_list() == [1, 2, 3]\n"
+      },
+      {
+        "name": "prepend",
+        "code": "from linked_list import LinkedList\nll = LinkedList()\nll.append(2); ll.prepend(1)\nassert ll.to_list() == [1, 2]\n"
+      },
+      {
+        "name": "delete",
+        "code": "from linked_list import LinkedList\nll = LinkedList()\nll.append(1); ll.append(2); ll.append(3)\nll.delete(2)\nassert ll.to_list() == [1, 3]\nassert ll.size() == 2\n"
+      },
+      {
+        "name": "delete_not_found",
+        "code": "from linked_list import LinkedList\nll = LinkedList()\nll.append(1)\ntry:\n    ll.delete(99)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "find",
+        "code": "from linked_list import LinkedList\nll = LinkedList()\nll.append(10); ll.append(20)\nassert ll.find(10) == True\nassert ll.find(99) == False\n"
+      },
+      {
+        "name": "size",
+        "code": "from linked_list import LinkedList; ll = LinkedList(); assert ll.size() == 0; ll.append(1); assert ll.size() == 1"
+      }
+    ]
+  },
+  {
+    "task_id": "task_board",
+    "tier": "complex",
+    "request": "Create a TaskBoard class for managing tasks with priorities. Methods: add_task(title: str, priority: int) -> int (returns unique task_id starting from 1), complete_task(task_id: int) -> bool (returns True if found and completed, False if not found), get_pending() -> list[dict] returns pending tasks sorted by priority descending, each dict has keys 'id', 'title', 'priority', get_stats() -> dict with keys 'total', 'done', 'pending' (int values). Priority must be 1-5, raise ValueError for invalid priority.",
+    "probes": [
+      {
+        "name": "add_returns_id",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\nid1 = tb.add_task('Task A', 3)\nid2 = tb.add_task('Task B', 1)\nassert id1 == 1\nassert id2 == 2\n"
+      },
+      {
+        "name": "complete",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\ntb.add_task('T1', 2)\nassert tb.complete_task(1) == True\nassert tb.complete_task(999) == False\n"
+      },
+      {
+        "name": "pending_sorted",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\ntb.add_task('Low', 1)\ntb.add_task('High', 5)\ntb.add_task('Mid', 3)\npending = tb.get_pending()\nassert len(pending) == 3\nassert pending[0]['priority'] >= pending[1]['priority'] >= pending[2]['priority']\nassert pending[0]['title'] == 'High'\n"
+      },
+      {
+        "name": "stats",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\ntb.add_task('A', 1)\ntb.add_task('B', 2)\ntb.complete_task(1)\nstats = tb.get_stats()\nassert stats['total'] == 2\nassert stats['done'] == 1\nassert stats['pending'] == 1\n"
+      },
+      {
+        "name": "invalid_priority",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\ntry:\n    tb.add_task('Bad', 0)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\ntry:\n    tb.add_task('Bad', 6)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "complete_removes_from_pending",
+        "code": "from task_board import TaskBoard\ntb = TaskBoard()\ntb.add_task('A', 3)\ntb.add_task('B', 2)\ntb.complete_task(1)\npending = tb.get_pending()\nassert len(pending) == 1\nassert pending[0]['title'] == 'B'\n"
+      }
+    ]
+  },
+  {
+    "task_id": "matrix",
+    "tier": "complex",
+    "request": "Create a Matrix class that takes a 2D list of numbers in the constructor. Methods: rows() -> int, cols() -> int, get(row, col) -> number, transpose() -> Matrix (returns new Matrix), add(other) -> Matrix (element-wise addition, raise ValueError if dimensions differ), multiply(other) -> Matrix (matrix multiplication, raise ValueError if inner dimensions don't match), to_list() -> list[list] returns the underlying 2D list.",
+    "probes": [
+      {
+        "name": "dims",
+        "code": "from matrix import Matrix\nm = Matrix([[1,2,3],[4,5,6]])\nassert m.rows() == 2\nassert m.cols() == 3\n"
+      },
+      {
+        "name": "get",
+        "code": "from matrix import Matrix; m = Matrix([[1,2],[3,4]]); assert m.get(0,0) == 1; assert m.get(1,1) == 4"
+      },
+      {
+        "name": "transpose",
+        "code": "from matrix import Matrix\nm = Matrix([[1,2],[3,4]])\nt = m.transpose()\nassert t.to_list() == [[1,3],[2,4]]\n"
+      },
+      {
+        "name": "add",
+        "code": "from matrix import Matrix\na = Matrix([[1,2],[3,4]])\nb = Matrix([[5,6],[7,8]])\nc = a.add(b)\nassert c.to_list() == [[6,8],[10,12]]\n"
+      },
+      {
+        "name": "add_mismatch",
+        "code": "from matrix import Matrix\na = Matrix([[1,2]])\nb = Matrix([[1],[2]])\ntry:\n    a.add(b)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "multiply",
+        "code": "from matrix import Matrix\na = Matrix([[1,2],[3,4]])\nb = Matrix([[5,6],[7,8]])\nc = a.multiply(b)\nassert c.to_list() == [[19,22],[43,50]]\n"
+      },
+      {
+        "name": "multiply_mismatch",
+        "code": "from matrix import Matrix\na = Matrix([[1,2,3]])\nb = Matrix([[1,2,3]])\ntry:\n    a.multiply(b)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "lru_cache",
+    "tier": "complex",
+    "request": "Create an LRUCache class with a capacity parameter. Methods: get(key) -> value or -1 if not found, put(key, value) inserts or updates, evicting least recently used if at capacity, size() -> int current number of items. Both get and put should count as 'use' for LRU ordering.",
+    "probes": [
+      {
+        "name": "basic_put_get",
+        "code": "from lru_cache import LRUCache\nc = LRUCache(2)\nc.put(1, 'a')\nc.put(2, 'b')\nassert c.get(1) == 'a'\nassert c.get(2) == 'b'\n"
+      },
+      {
+        "name": "miss",
+        "code": "from lru_cache import LRUCache; c = LRUCache(2); assert c.get(99) == -1"
+      },
+      {
+        "name": "eviction",
+        "code": "from lru_cache import LRUCache\nc = LRUCache(2)\nc.put(1, 'a')\nc.put(2, 'b')\nc.put(3, 'c')  # evicts key 1\nassert c.get(1) == -1\nassert c.get(2) == 'b'\nassert c.get(3) == 'c'\n"
+      },
+      {
+        "name": "lru_order",
+        "code": "from lru_cache import LRUCache\nc = LRUCache(2)\nc.put(1, 'a')\nc.put(2, 'b')\nc.get(1)        # use key 1, making key 2 the LRU\nc.put(3, 'c')   # evicts key 2 (LRU)\nassert c.get(1) == 'a'\nassert c.get(2) == -1\nassert c.get(3) == 'c'\n"
+      },
+      {
+        "name": "update",
+        "code": "from lru_cache import LRUCache\nc = LRUCache(2)\nc.put(1, 'a')\nc.put(1, 'z')  # update\nassert c.get(1) == 'z'\nassert c.size() == 1\n"
+      },
+      {
+        "name": "size",
+        "code": "from lru_cache import LRUCache\nc = LRUCache(3)\nassert c.size() == 0\nc.put(1, 'a'); c.put(2, 'b')\nassert c.size() == 2\nc.put(3, 'c'); c.put(4, 'd')  # evicts 1\nassert c.size() == 3\n"
+      }
+    ]
+  },
+  {
+    "task_id": "data_pipeline",
+    "tier": "complex",
+    "request": "Create a DataPipeline class for transforming list-of-dicts data. Constructor takes no arguments and initializes an empty pipeline. Methods (all return self for chaining): load(data: list[dict]) stores the data, filter(field: str, op: str, value) keeps rows where field matches (op is one of 'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'contains'), transform(field: str, func_name: str) applies transformation to field in each row (func_name is one of 'upper', 'lower', 'strip', 'abs', 'int', 'float'), sort(field: str, reverse: bool = False) sorts rows by field, select(*fields) keeps only the specified fields in each row. execute() -> list[dict] runs the pipeline and returns results. aggregate(field: str, func: str) -> float|int computes a single value (func is one of 'sum', 'avg', 'min', 'max', 'count'). aggregate operates on current pipeline data (after filters etc). Raise KeyError if a field does not exist in any row. Raise ValueError if an unknown op, func_name, or func is given.",
+    "probes": [
+      {
+        "name": "load_execute",
+        "code": "from data_pipeline import DataPipeline\ndp = DataPipeline()\ndata = [{'a': 1, 'b': 2}, {'a': 3, 'b': 4}]\nresult = dp.load(data).execute()\nassert result == [{'a': 1, 'b': 2}, {'a': 3, 'b': 4}]\n"
+      },
+      {
+        "name": "filter_gt",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'x': 10}, {'x': 20}, {'x': 30}]\nresult = DataPipeline().load(data).filter('x', 'gt', 15).execute()\nassert result == [{'x': 20}, {'x': 30}]\n"
+      },
+      {
+        "name": "filter_contains",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'name': 'Alice'}, {'name': 'Bob'}, {'name': 'Alicia'}]\nresult = DataPipeline().load(data).filter('name', 'contains', 'Ali').execute()\nassert result == [{'name': 'Alice'}, {'name': 'Alicia'}]\n"
+      },
+      {
+        "name": "transform_upper",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'name': 'alice'}, {'name': 'bob'}]\nresult = DataPipeline().load(data).transform('name', 'upper').execute()\nassert result == [{'name': 'ALICE'}, {'name': 'BOB'}]\n"
+      },
+      {
+        "name": "sort_reverse",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'v': 3}, {'v': 1}, {'v': 2}]\nresult = DataPipeline().load(data).sort('v', reverse=True).execute()\nassert [r['v'] for r in result] == [3, 2, 1]\n"
+      },
+      {
+        "name": "select_fields",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'a': 1, 'b': 2, 'c': 3}]\nresult = DataPipeline().load(data).select('a', 'c').execute()\nassert result == [{'a': 1, 'c': 3}]\n"
+      },
+      {
+        "name": "chaining",
+        "code": "from data_pipeline import DataPipeline\ndata = [\n    {'name': 'alice', 'age': 30, 'score': 85},\n    {'name': 'bob', 'age': 25, 'score': 90},\n    {'name': 'carol', 'age': 35, 'score': 78},\n    {'name': 'dave', 'age': 20, 'score': 95},\n]\nresult = (DataPipeline()\n    .load(data)\n    .filter('age', 'gte', 25)\n    .transform('name', 'upper')\n    .sort('score', reverse=True)\n    .select('name', 'score')\n    .execute())\nassert result == [\n    {'name': 'BOB', 'score': 90},\n    {'name': 'ALICE', 'score': 85},\n    {'name': 'CAROL', 'score': 78},\n]\n"
+      },
+      {
+        "name": "aggregate_sum_avg",
+        "code": "from data_pipeline import DataPipeline\ndata = [{'v': 10}, {'v': 20}, {'v': 30}]\ndp = DataPipeline().load(data)\nassert dp.aggregate('v', 'sum') == 60\nassert dp.aggregate('v', 'avg') == 20.0\nassert dp.aggregate('v', 'count') == 3\n"
+      },
+      {
+        "name": "empty_data",
+        "code": "from data_pipeline import DataPipeline\ndp = DataPipeline().load([])\nassert dp.execute() == []\nassert dp.aggregate('x', 'count') == 0\n"
+      },
+      {
+        "name": "invalid_op",
+        "code": "from data_pipeline import DataPipeline\nimport traceback\ndata = [{'x': 1}]\ntry:\n    DataPipeline().load(data).filter('x', 'bad_op', 1).execute()\n    assert False, 'should have raised ValueError'\nexcept ValueError:\n    pass\ntry:\n    DataPipeline().load(data).transform('x', 'bad_func').execute()\n    assert False, 'should have raised ValueError'\nexcept ValueError:\n    pass\ntry:\n    DataPipeline().load(data).aggregate('x', 'bad_agg')\n    assert False, 'should have raised ValueError'\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "todo_manager",
+    "tier": "complex",
+    "request": "Create a TodoManager class for managing todo tasks. Constructor takes no arguments. Methods: add(title: str, due_date: str = None, priority: int = 1, tags: list = None) -> int adds a task and returns a unique integer id starting from 1. due_date is a string in 'YYYY-MM-DD' format or None. priority must be 1-5 (raise ValueError otherwise). tags is a list of strings or None (default to empty list). complete(task_id: int) -> bool marks task as done, returns False if id not found. delete(task_id: int) -> bool removes task, returns False if id not found. get(task_id: int) -> dict returns task as dict with keys: 'id', 'title', 'done', 'due_date', 'priority', 'tags'. Raise KeyError if not found. list_tasks(status: str = 'all', sort_by: str = 'priority', tag: str = None) -> list[dict] status is 'all', 'done', or 'pending'. sort_by is 'priority' (descending) or 'due_date' (ascending, None dates last). tag filters to tasks containing that tag. search(query: str) -> list[dict] returns tasks where title contains query (case-insensitive). overdue(reference_date: str) -> list[dict] returns pending tasks with due_date before reference_date. stats() -> dict with keys 'total', 'done', 'pending' as integer counts.",
+    "probes": [
+      {
+        "name": "add_and_get",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\nid1 = tm.add('Buy milk')\nid2 = tm.add('Walk dog', due_date='2025-03-01', priority=3, tags=['pet'])\nassert id1 == 1\nassert id2 == 2\nt = tm.get(id2)\nassert t['title'] == 'Walk dog'\nassert t['done'] is False\nassert t['due_date'] == '2025-03-01'\nassert t['priority'] == 3\nassert t['tags'] == ['pet']\n"
+      },
+      {
+        "name": "complete_and_stats",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('A')\ntm.add('B')\nassert tm.complete(1) is True\nassert tm.complete(999) is False\ns = tm.stats()\nassert s == {'total': 2, 'done': 1, 'pending': 1}\n"
+      },
+      {
+        "name": "delete",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\nid1 = tm.add('A')\nassert tm.delete(id1) is True\nassert tm.delete(id1) is False\ntry:\n    tm.get(id1)\n    assert False, 'should raise KeyError'\nexcept KeyError:\n    pass\ns = tm.stats()\nassert s['total'] == 0\n"
+      },
+      {
+        "name": "list_by_priority",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('Low', priority=1)\ntm.add('High', priority=5)\ntm.add('Mid', priority=3)\ntasks = tm.list_tasks(sort_by='priority')\npriorities = [t['priority'] for t in tasks]\nassert priorities == [5, 3, 1]\n"
+      },
+      {
+        "name": "list_filter_status",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('A')\ntm.add('B')\ntm.complete(1)\ndone = tm.list_tasks(status='done')\npending = tm.list_tasks(status='pending')\nassert len(done) == 1 and done[0]['title'] == 'A'\nassert len(pending) == 1 and pending[0]['title'] == 'B'\n"
+      },
+      {
+        "name": "list_filter_tag",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('Walk dog', tags=['pet', 'outdoor'])\ntm.add('Feed cat', tags=['pet'])\ntm.add('Buy milk', tags=['shopping'])\nresult = tm.list_tasks(tag='pet')\ntitles = sorted([t['title'] for t in result])\nassert titles == ['Feed cat', 'Walk dog']\n"
+      },
+      {
+        "name": "search",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('Buy groceries')\ntm.add('Buy new shoes')\ntm.add('Walk the dog')\nresult = tm.search('buy')\nassert len(result) == 2\ntitles = sorted([t['title'] for t in result])\nassert titles == ['Buy groceries', 'Buy new shoes']\n"
+      },
+      {
+        "name": "overdue",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('Old task', due_date='2020-01-01')\ntm.add('Future task', due_date='2099-12-31')\ntm.add('No date task')\ntm.add('Done old', due_date='2020-06-01')\ntm.complete(4)\nresult = tm.overdue('2025-01-01')\nassert len(result) == 1\nassert result[0]['title'] == 'Old task'\n"
+      },
+      {
+        "name": "invalid_priority",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntry:\n    tm.add('Bad', priority=0)\n    assert False, 'should raise ValueError'\nexcept ValueError:\n    pass\ntry:\n    tm.add('Bad', priority=6)\n    assert False, 'should raise ValueError'\nexcept ValueError:\n    pass\nid1 = tm.add('Good', priority=5)\nassert id1 == 1\n"
+      },
+      {
+        "name": "sort_by_due_date",
+        "code": "from todo_manager import TodoManager\ntm = TodoManager()\ntm.add('No date', priority=1)\ntm.add('Late', due_date='2025-12-01', priority=2)\ntm.add('Early', due_date='2025-01-01', priority=3)\ntasks = tm.list_tasks(sort_by='due_date')\ntitles = [t['title'] for t in tasks]\nassert titles == ['Early', 'Late', 'No date']\n"
+      }
+    ]
+  },
+  {
+    "task_id": "temperature_converter",
+    "tier": "simple",
+    "request": "Create a TemperatureConverter class with methods: celsius_to_fahrenheit(c) returns float, fahrenheit_to_celsius(f) returns float, celsius_to_kelvin(c) returns float, kelvin_to_celsius(k) returns float. Raise ValueError if kelvin input is below 0 (absolute zero).",
+    "probes": [
+      {
+        "name": "c_to_f",
+        "code": "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_fahrenheit(0) == 32.0"
+      },
+      {
+        "name": "c_to_f_100",
+        "code": "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_fahrenheit(100) == 212.0"
+      },
+      {
+        "name": "f_to_c",
+        "code": "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.fahrenheit_to_celsius(32) == 0.0"
+      },
+      {
+        "name": "c_to_k",
+        "code": "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_kelvin(0) == 273.15"
+      },
+      {
+        "name": "k_to_c",
+        "code": "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.kelvin_to_celsius(273.15) == 0.0"
+      },
+      {
+        "name": "abs_zero",
+        "code": "from temperature_converter import TemperatureConverter\nt = TemperatureConverter()\ntry:\n    t.kelvin_to_celsius(-1)\n    assert False, 'Should raise ValueError'\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "string_utils",
+    "tier": "simple",
+    "request": "Create a StringUtils class with methods: reverse(s: str) -> str, is_palindrome(s: str) -> bool (case-insensitive, ignoring spaces), count_vowels(s: str) -> int (a, e, i, o, u, case-insensitive), capitalize_words(s: str) -> str (capitalize first letter of each word).",
+    "probes": [
+      {
+        "name": "reverse",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.reverse('hello') == 'olleh'"
+      },
+      {
+        "name": "palindrome_yes",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('Racecar') is True"
+      },
+      {
+        "name": "palindrome_no",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('hello') is False"
+      },
+      {
+        "name": "palindrome_spaces",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('A man a plan a canal Panama') is True"
+      },
+      {
+        "name": "vowels",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.count_vowels('Hello World') == 3"
+      },
+      {
+        "name": "capitalize",
+        "code": "from string_utils import StringUtils; s = StringUtils(); assert s.capitalize_words('hello world foo') == 'Hello World Foo'"
+      }
+    ]
+  },
+  {
+    "task_id": "queue_ds",
+    "tier": "simple",
+    "request": "Create a Queue class (FIFO) in a file called queue_ds.py. Methods: enqueue(item) adds to back, dequeue() removes and returns from front, peek() returns front item without removing, is_empty() -> bool, size() -> int. dequeue() and peek() on empty queue should raise IndexError.",
+    "probes": [
+      {
+        "name": "enqueue_dequeue",
+        "code": "from queue_ds import Queue\nq = Queue()\nq.enqueue(1); q.enqueue(2); q.enqueue(3)\nassert q.dequeue() == 1\nassert q.dequeue() == 2\n"
+      },
+      {
+        "name": "fifo_order",
+        "code": "from queue_ds import Queue\nq = Queue()\nq.enqueue('a'); q.enqueue('b'); q.enqueue('c')\nassert q.dequeue() == 'a'\nassert q.dequeue() == 'b'\nassert q.dequeue() == 'c'\n"
+      },
+      {
+        "name": "peek",
+        "code": "from queue_ds import Queue; q = Queue(); q.enqueue(42); assert q.peek() == 42; assert q.size() == 1"
+      },
+      {
+        "name": "size_empty",
+        "code": "from queue_ds import Queue; q = Queue(); assert q.is_empty(); assert q.size() == 0"
+      },
+      {
+        "name": "empty_dequeue",
+        "code": "from queue_ds import Queue\nq = Queue()\ntry:\n    q.dequeue()\n    assert False\nexcept IndexError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "number_utils",
+    "tier": "simple",
+    "request": "Create the following functions: is_prime(n: int) -> bool returns True if n is prime (n < 2 returns False), factorial(n: int) -> int returns n! (raise ValueError for negative n), fibonacci(n: int) -> list[int] returns first n Fibonacci numbers starting [0, 1, 1, 2, ...], gcd(a: int, b: int) -> int returns greatest common divisor.",
+    "probes": [
+      {
+        "name": "prime_yes",
+        "code": "from number_utils import is_prime; assert is_prime(7) is True; assert is_prime(13) is True"
+      },
+      {
+        "name": "prime_no",
+        "code": "from number_utils import is_prime; assert is_prime(1) is False; assert is_prime(4) is False; assert is_prime(0) is False"
+      },
+      {
+        "name": "factorial",
+        "code": "from number_utils import factorial; assert factorial(5) == 120; assert factorial(0) == 1"
+      },
+      {
+        "name": "factorial_neg",
+        "code": "from number_utils import factorial\ntry:\n    factorial(-1)\n    assert False\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "fibonacci",
+        "code": "from number_utils import fibonacci; assert fibonacci(6) == [0, 1, 1, 2, 3, 5]"
+      },
+      {
+        "name": "gcd",
+        "code": "from number_utils import gcd; assert gcd(12, 8) == 4; assert gcd(17, 5) == 1"
+      }
+    ]
+  },
+  {
+    "task_id": "shopping_cart",
+    "tier": "simple",
+    "request": "Create a ShoppingCart class. Methods: add_item(name: str, price: float, quantity: int = 1), remove_item(name: str) removes item (raise KeyError if not found), get_total() -> float returns sum of price * quantity for all items, item_count() -> int returns total number of items (sum of quantities), clear() removes all items.",
+    "probes": [
+      {
+        "name": "add_total",
+        "code": "from shopping_cart import ShoppingCart\nc = ShoppingCart()\nc.add_item('Apple', 1.50, 3)\nc.add_item('Bread', 2.00)\nassert c.get_total() == 6.50\n"
+      },
+      {
+        "name": "remove",
+        "code": "from shopping_cart import ShoppingCart\nc = ShoppingCart()\nc.add_item('Apple', 1.50)\nc.remove_item('Apple')\nassert c.get_total() == 0\n"
+      },
+      {
+        "name": "remove_missing",
+        "code": "from shopping_cart import ShoppingCart\nc = ShoppingCart()\ntry:\n    c.remove_item('Ghost')\n    assert False\nexcept KeyError:\n    pass\n"
+      },
+      {
+        "name": "item_count",
+        "code": "from shopping_cart import ShoppingCart\nc = ShoppingCart()\nc.add_item('A', 1.0, 3)\nc.add_item('B', 2.0, 2)\nassert c.item_count() == 5\n"
+      },
+      {
+        "name": "clear",
+        "code": "from shopping_cart import ShoppingCart\nc = ShoppingCart()\nc.add_item('A', 1.0)\nc.clear()\nassert c.get_total() == 0\nassert c.item_count() == 0\n"
+      }
+    ]
+  },
+  {
+    "task_id": "json_validator",
+    "tier": "medium",
+    "request": "Create a JsonValidator class. Methods: validate(schema: dict, data: dict) -> tuple[bool, list[str]] validates data against a schema and returns (is_valid, list_of_errors). Schema format: each key maps to a dict with 'type' (str, int, float, bool, list, dict), optional 'required' (bool, default True), optional 'min' / 'max' for numbers, optional 'min_length' / 'max_length' for strings. Return errors like 'field_name: expected type int, got str' or 'field_name: required field missing'.",
+    "probes": [
+      {
+        "name": "valid_data",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'name': {'type': 'str'}, 'age': {'type': 'int'}}\nok, errors = v.validate(schema, {'name': 'Alice', 'age': 30})\nassert ok is True\nassert errors == []\n"
+      },
+      {
+        "name": "wrong_type",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'age': {'type': 'int'}}\nok, errors = v.validate(schema, {'age': 'not_a_number'})\nassert ok is False\nassert len(errors) == 1\nassert 'age' in errors[0]\n"
+      },
+      {
+        "name": "missing_required",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'name': {'type': 'str', 'required': True}}\nok, errors = v.validate(schema, {})\nassert ok is False\nassert any('required' in e.lower() or 'missing' in e.lower() for e in errors)\n"
+      },
+      {
+        "name": "optional_field",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'name': {'type': 'str'}, 'bio': {'type': 'str', 'required': False}}\nok, errors = v.validate(schema, {'name': 'Alice'})\nassert ok is True\n"
+      },
+      {
+        "name": "min_max",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'age': {'type': 'int', 'min': 0, 'max': 150}}\nok1, _ = v.validate(schema, {'age': 25})\nok2, e2 = v.validate(schema, {'age': -1})\nok3, e3 = v.validate(schema, {'age': 200})\nassert ok1 is True\nassert ok2 is False\nassert ok3 is False\n"
+      },
+      {
+        "name": "string_length",
+        "code": "from json_validator import JsonValidator\nv = JsonValidator()\nschema = {'code': {'type': 'str', 'min_length': 2, 'max_length': 5}}\nok1, _ = v.validate(schema, {'code': 'AB'})\nok2, _ = v.validate(schema, {'code': 'A'})\nok3, _ = v.validate(schema, {'code': 'ABCDEF'})\nassert ok1 is True\nassert ok2 is False\nassert ok3 is False\n"
+      }
+    ]
+  },
+  {
+    "task_id": "event_emitter",
+    "tier": "medium",
+    "request": "Create an EventEmitter class. Methods: on(event: str, callback: callable) registers a listener, off(event: str, callback: callable) removes a specific listener, emit(event: str, *args, **kwargs) calls all listeners for that event with the given args, once(event: str, callback: callable) registers a listener that fires only once, listener_count(event: str) -> int returns number of listeners for event.",
+    "probes": [
+      {
+        "name": "on_emit",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nresults = []\nee.on('data', lambda x: results.append(x))\nee.emit('data', 42)\nassert results == [42]\n"
+      },
+      {
+        "name": "multiple_listeners",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nr1, r2 = [], []\nee.on('data', lambda x: r1.append(x))\nee.on('data', lambda x: r2.append(x))\nee.emit('data', 'hello')\nassert r1 == ['hello'] and r2 == ['hello']\n"
+      },
+      {
+        "name": "off",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nresults = []\ncb = lambda x: results.append(x)\nee.on('data', cb)\nee.off('data', cb)\nee.emit('data', 99)\nassert results == []\n"
+      },
+      {
+        "name": "once",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nresults = []\nee.once('click', lambda: results.append('clicked'))\nee.emit('click')\nee.emit('click')\nassert results == ['clicked']\n"
+      },
+      {
+        "name": "listener_count",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nee.on('a', lambda: None)\nee.on('a', lambda: None)\nassert ee.listener_count('a') == 2\nassert ee.listener_count('b') == 0\n"
+      },
+      {
+        "name": "no_event",
+        "code": "from event_emitter import EventEmitter\nee = EventEmitter()\nee.emit('nonexistent')  # should not raise\n"
+      }
+    ]
+  },
+  {
+    "task_id": "rate_limiter",
+    "tier": "medium",
+    "request": "Create a RateLimiter class. Constructor takes max_requests (int) and window_seconds (float). Methods: allow(timestamp: float) -> bool returns True if the request is allowed (fewer than max_requests in the last window_seconds), False otherwise. get_usage(timestamp: float) -> dict returns {'allowed': int, 'remaining': int, 'reset_at': float} where reset_at is the timestamp when the oldest request in the window expires. reset() clears all tracked requests.",
+    "probes": [
+      {
+        "name": "allow_basic",
+        "code": "from rate_limiter import RateLimiter\nrl = RateLimiter(3, 10.0)\nassert rl.allow(1.0) is True\nassert rl.allow(2.0) is True\nassert rl.allow(3.0) is True\nassert rl.allow(4.0) is False\n"
+      },
+      {
+        "name": "window_expiry",
+        "code": "from rate_limiter import RateLimiter\nrl = RateLimiter(2, 5.0)\nassert rl.allow(1.0) is True\nassert rl.allow(2.0) is True\nassert rl.allow(3.0) is False\nassert rl.allow(7.0) is True  # 1.0 expired (7-5=2, > 1.0)\n"
+      },
+      {
+        "name": "usage",
+        "code": "from rate_limiter import RateLimiter\nrl = RateLimiter(3, 10.0)\nrl.allow(1.0)\nrl.allow(5.0)\nusage = rl.get_usage(6.0)\nassert usage['allowed'] == 2\nassert usage['remaining'] == 1\nassert usage['reset_at'] == 11.0  # oldest(1.0) + window(10.0)\n"
+      },
+      {
+        "name": "reset",
+        "code": "from rate_limiter import RateLimiter\nrl = RateLimiter(1, 60.0)\nrl.allow(1.0)\nassert rl.allow(2.0) is False\nrl.reset()\nassert rl.allow(3.0) is True\n"
+      }
+    ]
+  },
+  {
+    "task_id": "interval_merger",
+    "tier": "medium",
+    "request": "Create a function merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]] that takes a list of (start, end) intervals and merges overlapping ones. Return sorted list of merged intervals. Also create insert_interval(intervals: list[tuple[int, int]], new: tuple[int, int]) -> list[tuple[int, int]] that inserts a new interval into a sorted non-overlapping list and merges if needed. Also create is_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool.",
+    "probes": [
+      {
+        "name": "merge_basic",
+        "code": "from interval_merger import merge_intervals\nresult = merge_intervals([(1,3), (2,6), (8,10), (15,18)])\nassert result == [(1,6), (8,10), (15,18)]\n"
+      },
+      {
+        "name": "merge_all",
+        "code": "from interval_merger import merge_intervals\nresult = merge_intervals([(1,4), (2,5), (3,6)])\nassert result == [(1,6)]\n"
+      },
+      {
+        "name": "merge_none",
+        "code": "from interval_merger import merge_intervals\nresult = merge_intervals([(1,2), (5,6), (9,10)])\nassert result == [(1,2), (5,6), (9,10)]\n"
+      },
+      {
+        "name": "merge_empty",
+        "code": "from interval_merger import merge_intervals; assert merge_intervals([]) == []"
+      },
+      {
+        "name": "insert",
+        "code": "from interval_merger import insert_interval\nresult = insert_interval([(1,3), (6,9)], (2,5))\nassert result == [(1,5), (6,9)]\n"
+      },
+      {
+        "name": "overlap",
+        "code": "from interval_merger import is_overlap\nassert is_overlap((1,5), (3,7)) is True\nassert is_overlap((1,3), (5,7)) is False\nassert is_overlap((1,5), (5,7)) is True\n"
+      }
+    ]
+  },
+  {
+    "task_id": "trie",
+    "tier": "medium",
+    "request": "Create a Trie class (prefix tree) for strings. Methods: insert(word: str), search(word: str) -> bool (exact match), starts_with(prefix: str) -> bool (any word starts with prefix), delete(word: str) -> bool (returns False if not found), words_with_prefix(prefix: str) -> list[str] returns all words with given prefix sorted alphabetically, size() -> int returns number of words stored.",
+    "probes": [
+      {
+        "name": "insert_search",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('apple')\nassert t.search('apple') is True\nassert t.search('app') is False\n"
+      },
+      {
+        "name": "starts_with",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('apple')\nt.insert('application')\nassert t.starts_with('app') is True\nassert t.starts_with('xyz') is False\n"
+      },
+      {
+        "name": "prefix_words",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('car'); t.insert('card'); t.insert('care'); t.insert('dog')\nresult = t.words_with_prefix('car')\nassert result == ['car', 'card', 'care']\n"
+      },
+      {
+        "name": "delete",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('hello')\nassert t.delete('hello') is True\nassert t.search('hello') is False\nassert t.delete('hello') is False\n"
+      },
+      {
+        "name": "size",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('a'); t.insert('b'); t.insert('c')\nassert t.size() == 3\nt.delete('b')\nassert t.size() == 2\n"
+      },
+      {
+        "name": "delete_prefix_preserved",
+        "code": "from trie import Trie\nt = Trie()\nt.insert('app')\nt.insert('apple')\nt.delete('apple')\nassert t.search('app') is True\nassert t.search('apple') is False\n"
+      }
+    ]
+  },
+  {
+    "task_id": "state_machine",
+    "tier": "medium",
+    "request": "Create a StateMachine class. Constructor takes initial_state (str). Methods: add_transition(from_state: str, event: str, to_state: str, action: callable = None) registers a transition. trigger(event: str) -> str transitions to new state if valid transition exists, calls action if provided, returns new state. Raise ValueError if no transition. current_state -> str property. history() -> list[tuple[str, str, str]] returns list of (from_state, event, to_state). can_trigger(event: str) -> bool returns whether event is valid from current state.",
+    "probes": [
+      {
+        "name": "basic_transition",
+        "code": "from state_machine import StateMachine\nsm = StateMachine('idle')\nsm.add_transition('idle', 'start', 'running')\nresult = sm.trigger('start')\nassert result == 'running'\nassert sm.current_state == 'running'\n"
+      },
+      {
+        "name": "invalid_event",
+        "code": "from state_machine import StateMachine\nsm = StateMachine('idle')\ntry:\n    sm.trigger('invalid')\n    assert False\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "action_called",
+        "code": "from state_machine import StateMachine\nlog = []\nsm = StateMachine('off')\nsm.add_transition('off', 'press', 'on', action=lambda: log.append('turned_on'))\nsm.trigger('press')\nassert log == ['turned_on']\n"
+      },
+      {
+        "name": "history",
+        "code": "from state_machine import StateMachine\nsm = StateMachine('a')\nsm.add_transition('a', 'go', 'b')\nsm.add_transition('b', 'go', 'c')\nsm.trigger('go')\nsm.trigger('go')\nh = sm.history()\nassert h == [('a', 'go', 'b'), ('b', 'go', 'c')]\n"
+      },
+      {
+        "name": "can_trigger",
+        "code": "from state_machine import StateMachine\nsm = StateMachine('locked')\nsm.add_transition('locked', 'unlock', 'unlocked')\nassert sm.can_trigger('unlock') is True\nassert sm.can_trigger('lock') is False\n"
+      }
+    ]
+  },
+  {
+    "task_id": "expression_evaluator",
+    "tier": "medium",
+    "request": "Create a function evaluate(expression: str) -> float that evaluates simple arithmetic expressions with +, -, *, / operators and parentheses. Respect operator precedence (* and / before + and -). Handle spaces. Raise ValueError for invalid expressions (unbalanced parens, division by zero, invalid characters).",
+    "probes": [
+      {
+        "name": "simple_add",
+        "code": "from expression_evaluator import evaluate; assert evaluate('2 + 3') == 5.0"
+      },
+      {
+        "name": "precedence",
+        "code": "from expression_evaluator import evaluate; assert evaluate('2 + 3 * 4') == 14.0"
+      },
+      {
+        "name": "parens",
+        "code": "from expression_evaluator import evaluate; assert evaluate('(2 + 3) * 4') == 20.0"
+      },
+      {
+        "name": "nested_parens",
+        "code": "from expression_evaluator import evaluate; assert evaluate('((1 + 2) * (3 + 4))') == 21.0"
+      },
+      {
+        "name": "division",
+        "code": "from expression_evaluator import evaluate; assert evaluate('10 / 4') == 2.5"
+      },
+      {
+        "name": "div_zero",
+        "code": "from expression_evaluator import evaluate\ntry:\n    evaluate('5 / 0')\n    assert False\nexcept (ValueError, ZeroDivisionError):\n    pass\n"
+      },
+      {
+        "name": "complex_expr",
+        "code": "from expression_evaluator import evaluate; assert abs(evaluate('3.5 * 2 + 1') - 8.0) < 0.001"
+      }
+    ]
+  },
+  {
+    "task_id": "graph",
+    "tier": "medium",
+    "request": "Create a Graph class for an undirected, unweighted graph. Methods: add_vertex(v), add_edge(v1, v2), has_vertex(v) -> bool, has_edge(v1, v2) -> bool, neighbors(v) -> list (sorted), remove_edge(v1, v2), bfs(start, end) -> list returns shortest path as list of vertices (empty if no path), connected_components() -> list[list] returns list of components (each sorted, outer list sorted by first element).",
+    "probes": [
+      {
+        "name": "add_vertex_edge",
+        "code": "from graph import Graph\ng = Graph()\ng.add_vertex('A'); g.add_vertex('B')\ng.add_edge('A', 'B')\nassert g.has_vertex('A')\nassert g.has_edge('A', 'B')\nassert g.has_edge('B', 'A')  # undirected\n"
+      },
+      {
+        "name": "neighbors",
+        "code": "from graph import Graph\ng = Graph()\ng.add_vertex('A'); g.add_vertex('B'); g.add_vertex('C')\ng.add_edge('A', 'B'); g.add_edge('A', 'C')\nassert g.neighbors('A') == ['B', 'C']\n"
+      },
+      {
+        "name": "bfs_path",
+        "code": "from graph import Graph\ng = Graph()\nfor v in ['A','B','C','D']:\n    g.add_vertex(v)\ng.add_edge('A','B'); g.add_edge('B','C'); g.add_edge('C','D')\npath = g.bfs('A', 'D')\nassert path == ['A','B','C','D']\n"
+      },
+      {
+        "name": "bfs_no_path",
+        "code": "from graph import Graph\ng = Graph()\ng.add_vertex('A'); g.add_vertex('B')\npath = g.bfs('A', 'B')\nassert path == []\n"
+      },
+      {
+        "name": "components",
+        "code": "from graph import Graph\ng = Graph()\nfor v in ['A','B','C','D','E']:\n    g.add_vertex(v)\ng.add_edge('A','B'); g.add_edge('D','E')\ncc = g.connected_components()\nassert len(cc) == 3  # {A,B}, {C}, {D,E}\n"
+      },
+      {
+        "name": "remove_edge",
+        "code": "from graph import Graph\ng = Graph()\ng.add_vertex('A'); g.add_vertex('B')\ng.add_edge('A', 'B')\ng.remove_edge('A', 'B')\nassert g.has_edge('A', 'B') is False\n"
+      }
+    ]
+  },
+  {
+    "task_id": "mini_orm",
+    "tier": "complex",
+    "request": "Create a Table class that acts as a simple in-memory ORM. Constructor takes name (str) and columns (list of str). Methods: insert(row: dict) -> int inserts a row and returns auto-incremented id. All specified columns must be present in row (raise ValueError otherwise). select(where: dict = None) -> list[dict] returns rows matching all key=value pairs in where (None = all). update(row_id: int, values: dict) -> bool updates the row, returns False if not found. delete(row_id: int) -> bool deletes row, returns False if not found. count(where: dict = None) -> int returns count of matching rows. Each returned row dict includes an 'id' key.",
+    "probes": [
+      {
+        "name": "insert_select",
+        "code": "from mini_orm import Table\nt = Table('users', ['name', 'age'])\nid1 = t.insert({'name': 'Alice', 'age': 30})\nid2 = t.insert({'name': 'Bob', 'age': 25})\nassert id1 == 1 and id2 == 2\nrows = t.select()\nassert len(rows) == 2\nassert rows[0]['name'] == 'Alice'\n"
+      },
+      {
+        "name": "select_where",
+        "code": "from mini_orm import Table\nt = Table('users', ['name', 'age'])\nt.insert({'name': 'Alice', 'age': 30})\nt.insert({'name': 'Bob', 'age': 25})\nt.insert({'name': 'Carol', 'age': 30})\nresult = t.select({'age': 30})\nassert len(result) == 2\nnames = sorted(r['name'] for r in result)\nassert names == ['Alice', 'Carol']\n"
+      },
+      {
+        "name": "update",
+        "code": "from mini_orm import Table\nt = Table('users', ['name', 'age'])\nt.insert({'name': 'Alice', 'age': 30})\nassert t.update(1, {'age': 31}) is True\nassert t.select({'id': 1})[0]['age'] == 31 if t.select({'id': 1}) else t.select()[0]['age'] == 31\n"
+      },
+      {
+        "name": "delete",
+        "code": "from mini_orm import Table\nt = Table('users', ['name', 'age'])\nt.insert({'name': 'Alice', 'age': 30})\nassert t.delete(1) is True\nassert t.delete(1) is False\nassert t.count() == 0\n"
+      },
+      {
+        "name": "count",
+        "code": "from mini_orm import Table\nt = Table('items', ['type'])\nt.insert({'type': 'A'}); t.insert({'type': 'B'}); t.insert({'type': 'A'})\nassert t.count() == 3\nassert t.count({'type': 'A'}) == 2\n"
+      },
+      {
+        "name": "missing_column",
+        "code": "from mini_orm import Table\nt = Table('users', ['name', 'age'])\ntry:\n    t.insert({'name': 'Alice'})  # missing 'age'\n    assert False\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "scheduler",
+    "tier": "complex",
+    "request": "Create a Scheduler class for scheduling non-overlapping time slots. Methods: book(start: int, end: int) -> bool books a slot if it doesn't overlap with existing bookings (returns True), otherwise returns False. start < end required. cancel(start: int, end: int) -> bool cancels exact slot (returns False if not found). get_bookings() -> list[tuple[int, int]] returns all bookings sorted by start time. is_available(start: int, end: int) -> bool checks if slot is free. next_available(after: int, duration: int) -> tuple[int, int] returns the next available slot of given duration starting from 'after'. Raise ValueError if start >= end.",
+    "probes": [
+      {
+        "name": "book_basic",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\nassert s.book(9, 10) is True\nassert s.book(10, 11) is True\nassert s.book(9, 11) is False  # overlaps\n"
+      },
+      {
+        "name": "overlap_check",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\ns.book(10, 20)\nassert s.is_available(5, 10) is True\nassert s.is_available(5, 15) is False\nassert s.is_available(15, 25) is False\nassert s.is_available(20, 25) is True\n"
+      },
+      {
+        "name": "cancel",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\ns.book(9, 10)\nassert s.cancel(9, 10) is True\nassert s.cancel(9, 10) is False\nassert s.book(9, 10) is True\n"
+      },
+      {
+        "name": "get_bookings",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\ns.book(15, 20)\ns.book(5, 10)\nbookings = s.get_bookings()\nassert bookings == [(5, 10), (15, 20)]\n"
+      },
+      {
+        "name": "next_available",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\ns.book(10, 15)\ns.book(20, 25)\nslot = s.next_available(0, 5)\nassert slot == (0, 5)\nslot2 = s.next_available(10, 5)\nassert slot2 == (15, 20)\nslot3 = s.next_available(21, 5)\nassert slot3 == (25, 30)\n"
+      },
+      {
+        "name": "invalid_range",
+        "code": "from scheduler import Scheduler\ns = Scheduler()\ntry:\n    s.book(10, 10)\n    assert False\nexcept ValueError:\n    pass\ntry:\n    s.book(10, 5)\n    assert False\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "text_processor",
+    "tier": "complex",
+    "request": "Create a TextProcessor class. Methods: tokenize(text: str) -> list[str] splits text into words (lowercase, strip punctuation from edges). ngrams(text: str, n: int) -> list[tuple[str, ...]] returns n-grams from tokens. tf(text: str) -> dict[str, float] returns term frequency (count/total) for each token. similarity(text1: str, text2: str) -> float returns Jaccard similarity (intersection/union of token sets). summarize(text: str, n: int) -> str returns the n most frequent non-stopword tokens joined by space. Stopwords: a, an, the, is, in, on, at, to, and, of, for, it, this, that.",
+    "probes": [
+      {
+        "name": "tokenize",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\ntokens = tp.tokenize('Hello, World! Python is great.')\nassert tokens == ['hello', 'world', 'python', 'is', 'great']\n"
+      },
+      {
+        "name": "ngrams",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\nresult = tp.ngrams('one two three four', 2)\nassert result == [('one', 'two'), ('two', 'three'), ('three', 'four')]\n"
+      },
+      {
+        "name": "tf",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\nresult = tp.tf('the cat sat on the mat')\nassert abs(result['the'] - 2/6) < 0.001\nassert abs(result['cat'] - 1/6) < 0.001\n"
+      },
+      {
+        "name": "similarity",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\nsim = tp.similarity('the cat sat', 'the cat ran')\n# intersection={the,cat}, union={the,cat,sat,ran} => 2/4 = 0.5\nassert abs(sim - 0.5) < 0.001\n"
+      },
+      {
+        "name": "similarity_identical",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\nassert tp.similarity('hello world', 'hello world') == 1.0\nassert tp.similarity('', '') == 0.0 or tp.similarity('', '') == 1.0  # edge case\n"
+      },
+      {
+        "name": "summarize",
+        "code": "from text_processor import TextProcessor\ntp = TextProcessor()\ntext = 'the python python language is a great python language'\nresult = tp.summarize(text, 2)\n# python(3) and language(2) are most frequent non-stopwords\nwords = result.split()\nassert 'python' in words\nassert 'language' in words\nassert len(words) == 2\n"
+      }
+    ]
+  },
+  {
+    "task_id": "binary_search_tree",
+    "tier": "complex",
+    "request": "Create a BST class (Binary Search Tree) for integers. Methods: insert(value: int), search(value: int) -> bool, delete(value: int) -> bool (returns False if not found), inorder() -> list[int] (sorted), min_value() -> int (raise ValueError if empty), max_value() -> int (raise ValueError if empty), height() -> int (empty tree has height 0, single node has height 1), size() -> int.",
+    "probes": [
+      {
+        "name": "insert_search",
+        "code": "from binary_search_tree import BST\ntree = BST()\ntree.insert(5); tree.insert(3); tree.insert(7)\nassert tree.search(5) is True\nassert tree.search(3) is True\nassert tree.search(99) is False\n"
+      },
+      {
+        "name": "inorder",
+        "code": "from binary_search_tree import BST\ntree = BST()\nfor v in [5, 3, 7, 1, 4]:\n    tree.insert(v)\nassert tree.inorder() == [1, 3, 4, 5, 7]\n"
+      },
+      {
+        "name": "delete_leaf",
+        "code": "from binary_search_tree import BST\ntree = BST()\ntree.insert(5); tree.insert(3); tree.insert(7)\nassert tree.delete(3) is True\nassert tree.search(3) is False\nassert tree.inorder() == [5, 7]\n"
+      },
+      {
+        "name": "delete_two_children",
+        "code": "from binary_search_tree import BST\ntree = BST()\nfor v in [5, 3, 7, 1, 4, 6, 8]:\n    tree.insert(v)\ntree.delete(5)  # root with two children\nresult = tree.inorder()\nassert 5 not in result\nassert sorted(result) == result  # still valid BST\nassert len(result) == 6\n"
+      },
+      {
+        "name": "min_max",
+        "code": "from binary_search_tree import BST\ntree = BST()\nfor v in [10, 5, 15, 3, 7]:\n    tree.insert(v)\nassert tree.min_value() == 3\nassert tree.max_value() == 15\n"
+      },
+      {
+        "name": "height",
+        "code": "from binary_search_tree import BST\ntree = BST()\nassert tree.height() == 0\ntree.insert(5)\nassert tree.height() == 1\ntree.insert(3); tree.insert(7)\nassert tree.height() == 2\n"
+      },
+      {
+        "name": "size",
+        "code": "from binary_search_tree import BST\ntree = BST()\nassert tree.size() == 0\ntree.insert(5); tree.insert(3); tree.insert(7)\nassert tree.size() == 3\ntree.delete(3)\nassert tree.size() == 2\n"
+      },
+      {
+        "name": "empty_min",
+        "code": "from binary_search_tree import BST\ntree = BST()\ntry:\n    tree.min_value()\n    assert False\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "inventory_system",
+    "tier": "complex",
+    "request": "Create an Inventory class for managing products. Methods: add_product(name: str, price: float, quantity: int, category: str) -> int returns auto-incremented product id. Raise ValueError if price < 0 or quantity < 0. restock(product_id: int, quantity: int) adds quantity. Raise KeyError if not found. sell(product_id: int, quantity: int) -> float subtracts quantity, returns total price. Raise KeyError if not found. Raise ValueError if insufficient stock. get_product(product_id: int) -> dict with keys 'id', 'name', 'price', 'quantity', 'category'. Raise KeyError if not found. search(query: str = None, category: str = None, in_stock: bool = None) -> list[dict] filters products. query matches name (case-insensitive substring). low_stock(threshold: int = 5) -> list[dict] returns products with quantity <= threshold sorted by quantity ascending. total_value() -> float returns sum of price * quantity for all products.",
+    "probes": [
+      {
+        "name": "add_get",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\nid1 = inv.add_product('Widget', 9.99, 100, 'parts')\np = inv.get_product(id1)\nassert p['name'] == 'Widget'\nassert p['price'] == 9.99\nassert p['quantity'] == 100\n"
+      },
+      {
+        "name": "sell",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\nid1 = inv.add_product('Widget', 10.0, 50, 'parts')\ntotal = inv.sell(id1, 3)\nassert total == 30.0\nassert inv.get_product(id1)['quantity'] == 47\n"
+      },
+      {
+        "name": "sell_insufficient",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\nid1 = inv.add_product('Widget', 10.0, 2, 'parts')\ntry:\n    inv.sell(id1, 5)\n    assert False\nexcept ValueError:\n    pass\nassert inv.get_product(id1)['quantity'] == 2  # unchanged\n"
+      },
+      {
+        "name": "restock",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\nid1 = inv.add_product('Widget', 5.0, 10, 'parts')\ninv.restock(id1, 20)\nassert inv.get_product(id1)['quantity'] == 30\n"
+      },
+      {
+        "name": "search",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\ninv.add_product('Blue Widget', 5.0, 10, 'parts')\ninv.add_product('Red Widget', 6.0, 20, 'parts')\ninv.add_product('Green Gadget', 15.0, 5, 'tools')\nresult = inv.search(query='widget')\nassert len(result) == 2\nresult2 = inv.search(category='tools')\nassert len(result2) == 1\n"
+      },
+      {
+        "name": "low_stock",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\ninv.add_product('A', 1.0, 3, 'x')\ninv.add_product('B', 1.0, 10, 'x')\ninv.add_product('C', 1.0, 1, 'x')\nlow = inv.low_stock(5)\nassert len(low) == 2\nassert low[0]['name'] == 'C'  # quantity 1 first\nassert low[1]['name'] == 'A'  # quantity 3 second\n"
+      },
+      {
+        "name": "total_value",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\ninv.add_product('A', 10.0, 5, 'x')\ninv.add_product('B', 20.0, 3, 'x')\nassert inv.total_value() == 110.0\n"
+      },
+      {
+        "name": "invalid_price",
+        "code": "from inventory_system import Inventory\ninv = Inventory()\ntry:\n    inv.add_product('Bad', -5.0, 10, 'x')\n    assert False\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  },
+  {
+    "task_id": "cache_system",
+    "tier": "complex",
+    "request": "Create a Cache class with TTL (time-to-live) support. Constructor takes default_ttl (float, seconds). Methods: set(key: str, value, ttl: float = None) stores value with expiry. If ttl is None, use default_ttl. get(key: str, current_time: float = None) -> value, returns None if expired or not found. If current_time not provided, use time.time(). delete(key: str) -> bool removes key, returns False if not found. clear() removes all entries. cleanup(current_time: float = None) removes all expired entries. size() -> int returns number of non-expired entries. keys() -> list[str] returns non-expired keys sorted.",
+    "probes": [
+      {
+        "name": "set_get",
+        "code": "from cache_system import Cache\nimport time\nc = Cache(60.0)\nnow = time.time()\nc.set('key1', 'value1')\nassert c.get('key1', now) == 'value1'\n"
+      },
+      {
+        "name": "ttl_expiry",
+        "code": "from cache_system import Cache\nc = Cache(10.0)\nc.set('key1', 'val', ttl=5.0)\nassert c.get('key1', current_time=100.0) == 'val'  # depends on when set\n# Set with explicit timing\nc2 = Cache(10.0)\nc2.set('k', 'v', ttl=5.0)\nimport time\nnow = time.time()\nassert c2.get('k', now + 1) == 'v'     # not expired\nassert c2.get('k', now + 100) is None   # expired\n"
+      },
+      {
+        "name": "delete",
+        "code": "from cache_system import Cache\nc = Cache(60.0)\nc.set('key1', 'value1')\nassert c.delete('key1') is True\nassert c.get('key1') is None\nassert c.delete('key1') is False\n"
+      },
+      {
+        "name": "clear_size",
+        "code": "from cache_system import Cache\nc = Cache(60.0)\nc.set('a', 1); c.set('b', 2); c.set('c', 3)\nassert c.size() == 3\nc.clear()\nassert c.size() == 0\n"
+      },
+      {
+        "name": "keys_sorted",
+        "code": "from cache_system import Cache\nc = Cache(60.0)\nc.set('banana', 1); c.set('apple', 2); c.set('cherry', 3)\nassert c.keys() == ['apple', 'banana', 'cherry']\n"
+      }
+    ]
+  },
+  {
+    "task_id": "csv_parser",
+    "tier": "complex",
+    "request": "Create a CSVParser class. Methods: parse(text: str, delimiter: str = ',', has_header: bool = True) -> list[dict] parses CSV text. If has_header, first line is column names and returns list of dicts. If not has_header, returns list of lists. Handle quoted fields (double quotes around fields containing delimiter or newlines). to_csv(data: list[dict], delimiter: str = ',') -> str converts list of dicts back to CSV string with header row. filter_rows(data: list[dict], column: str, value) -> list[dict] returns rows where column equals value. sort_rows(data: list[dict], column: str, reverse: bool = False) -> list[dict] sorts by column.",
+    "probes": [
+      {
+        "name": "parse_basic",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ntext = 'name,age\\nAlice,30\\nBob,25'\nresult = p.parse(text)\nassert len(result) == 2\nassert result[0]['name'] == 'Alice'\nassert result[0]['age'] == '30'\n"
+      },
+      {
+        "name": "parse_no_header",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ntext = 'a,b,c\\n1,2,3'\nresult = p.parse(text, has_header=False)\nassert result == [['a','b','c'], ['1','2','3']]\n"
+      },
+      {
+        "name": "parse_quoted",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ntext = 'name,desc\\nAlice,\"Hello, World\"'\nresult = p.parse(text)\nassert result[0]['desc'] == 'Hello, World'\n"
+      },
+      {
+        "name": "to_csv",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ndata = [{'name': 'Alice', 'age': '30'}, {'name': 'Bob', 'age': '25'}]\ncsv = p.to_csv(data)\nlines = csv.strip().split('\\n')\nassert len(lines) == 3  # header + 2 rows\nassert 'name' in lines[0] and 'age' in lines[0]\n"
+      },
+      {
+        "name": "filter_rows",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ndata = [{'type': 'A', 'val': '1'}, {'type': 'B', 'val': '2'}, {'type': 'A', 'val': '3'}]\nresult = p.filter_rows(data, 'type', 'A')\nassert len(result) == 2\n"
+      },
+      {
+        "name": "sort_rows",
+        "code": "from csv_parser import CSVParser\np = CSVParser()\ndata = [{'name': 'Charlie'}, {'name': 'Alice'}, {'name': 'Bob'}]\nresult = p.sort_rows(data, 'name')\nassert [r['name'] for r in result] == ['Alice', 'Bob', 'Charlie']\n"
+      }
+    ]
+  },
+  {
+    "task_id": "vector2d",
+    "tier": "complex",
+    "request": "Create a Vector2D class. Constructor takes x (float) and y (float). Properties: x, y (read-only). Methods: add(other) -> Vector2D, subtract(other) -> Vector2D, dot(other) -> float (dot product), magnitude() -> float (length), normalize() -> Vector2D (unit vector, raise ValueError if zero vector), rotate(angle_degrees: float) -> Vector2D (rotate counterclockwise), distance_to(other) -> float, angle_to(other) -> float (angle in degrees between two vectors), __eq__ for comparison (with floating point tolerance 1e-9), __repr__ returns 'Vector2D(x, y)'.",
+    "probes": [
+      {
+        "name": "add_sub",
+        "code": "from vector2d import Vector2D\na = Vector2D(1, 2)\nb = Vector2D(3, 4)\nc = a.add(b)\nassert abs(c.x - 4) < 1e-9 and abs(c.y - 6) < 1e-9\nd = a.subtract(b)\nassert abs(d.x - (-2)) < 1e-9 and abs(d.y - (-2)) < 1e-9\n"
+      },
+      {
+        "name": "dot",
+        "code": "from vector2d import Vector2D; assert abs(Vector2D(1,0).dot(Vector2D(0,1))) < 1e-9"
+      },
+      {
+        "name": "magnitude",
+        "code": "from vector2d import Vector2D\nimport math\nv = Vector2D(3, 4)\nassert abs(v.magnitude() - 5.0) < 1e-9\n"
+      },
+      {
+        "name": "normalize",
+        "code": "from vector2d import Vector2D\nv = Vector2D(3, 4)\nn = v.normalize()\nassert abs(n.magnitude() - 1.0) < 1e-9\n"
+      },
+      {
+        "name": "normalize_zero",
+        "code": "from vector2d import Vector2D\ntry:\n    Vector2D(0, 0).normalize()\n    assert False\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "rotate",
+        "code": "from vector2d import Vector2D\nv = Vector2D(1, 0)\nr = v.rotate(90)\nassert abs(r.x) < 1e-6 and abs(r.y - 1) < 1e-6\n"
+      },
+      {
+        "name": "distance",
+        "code": "from vector2d import Vector2D\na = Vector2D(0, 0)\nb = Vector2D(3, 4)\nassert abs(a.distance_to(b) - 5.0) < 1e-9\n"
+      }
+    ]
+  },
+  {
+    "task_id": "permission_system",
+    "tier": "complex",
+    "request": "Create a PermissionSystem class for role-based access control. Methods: create_role(role: str) creates a role (raise ValueError if exists). delete_role(role: str) removes role (raise KeyError if not found). grant(role: str, permission: str) adds permission to role. revoke(role: str, permission: str) removes permission (raise KeyError if not found). assign_role(user: str, role: str) assigns role to user. unassign_role(user: str, role: str) removes role from user. has_permission(user: str, permission: str) -> bool checks if any of user's roles has permission. get_permissions(user: str) -> set[str] returns all permissions across all roles. get_users_with_permission(permission: str) -> list[str] returns sorted list of users.",
+    "probes": [
+      {
+        "name": "create_grant",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nps.create_role('admin')\nps.grant('admin', 'read')\nps.grant('admin', 'write')\nps.assign_role('alice', 'admin')\nassert ps.has_permission('alice', 'read') is True\nassert ps.has_permission('alice', 'delete') is False\n"
+      },
+      {
+        "name": "multi_role",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nps.create_role('viewer')\nps.create_role('editor')\nps.grant('viewer', 'read')\nps.grant('editor', 'write')\nps.assign_role('bob', 'viewer')\nps.assign_role('bob', 'editor')\nperms = ps.get_permissions('bob')\nassert 'read' in perms and 'write' in perms\n"
+      },
+      {
+        "name": "revoke",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nps.create_role('admin')\nps.grant('admin', 'delete')\nps.assign_role('alice', 'admin')\nps.revoke('admin', 'delete')\nassert ps.has_permission('alice', 'delete') is False\n"
+      },
+      {
+        "name": "users_with_perm",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nps.create_role('admin')\nps.grant('admin', 'write')\nps.assign_role('bob', 'admin')\nps.assign_role('alice', 'admin')\nusers = ps.get_users_with_permission('write')\nassert users == ['alice', 'bob']\n"
+      },
+      {
+        "name": "duplicate_role",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nps.create_role('admin')\ntry:\n    ps.create_role('admin')\n    assert False\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "no_role_user",
+        "code": "from permission_system import PermissionSystem\nps = PermissionSystem()\nassert ps.has_permission('nobody', 'anything') is False\nassert ps.get_permissions('nobody') == set()\n"
+      }
+    ]
+  },
+  {
+    "task_id": "sparse_matrix",
+    "tier": "complex",
+    "request": "Create a SparseMatrix class for efficient storage of matrices with many zeros. Constructor takes rows (int) and cols (int). Methods: set(row: int, col: int, value: float) sets value (remove if zero). get(row: int, col: int) -> float returns value (0.0 if not stored). Raise IndexError if row/col out of bounds. nnz() -> int returns number of non-zero elements. add(other: SparseMatrix) -> SparseMatrix element-wise addition (raise ValueError if dimensions differ). multiply(other: SparseMatrix) -> SparseMatrix matrix multiplication (raise ValueError if incompatible). transpose() -> SparseMatrix. to_dense() -> list[list[float]] returns full 2D list.",
+    "probes": [
+      {
+        "name": "set_get",
+        "code": "from sparse_matrix import SparseMatrix\nm = SparseMatrix(3, 3)\nm.set(0, 0, 5.0)\nm.set(1, 2, 3.0)\nassert m.get(0, 0) == 5.0\nassert m.get(1, 1) == 0.0\nassert m.get(1, 2) == 3.0\n"
+      },
+      {
+        "name": "nnz",
+        "code": "from sparse_matrix import SparseMatrix\nm = SparseMatrix(3, 3)\nm.set(0, 0, 1.0)\nm.set(1, 1, 2.0)\nm.set(2, 2, 3.0)\nassert m.nnz() == 3\nm.set(1, 1, 0.0)  # remove\nassert m.nnz() == 2\n"
+      },
+      {
+        "name": "bounds",
+        "code": "from sparse_matrix import SparseMatrix\nm = SparseMatrix(2, 2)\ntry:\n    m.get(5, 0)\n    assert False\nexcept IndexError:\n    pass\n"
+      },
+      {
+        "name": "add",
+        "code": "from sparse_matrix import SparseMatrix\na = SparseMatrix(2, 2)\na.set(0, 0, 1.0); a.set(1, 1, 2.0)\nb = SparseMatrix(2, 2)\nb.set(0, 0, 3.0); b.set(0, 1, 4.0)\nc = a.add(b)\nassert c.get(0, 0) == 4.0\nassert c.get(0, 1) == 4.0\nassert c.get(1, 1) == 2.0\n"
+      },
+      {
+        "name": "transpose",
+        "code": "from sparse_matrix import SparseMatrix\nm = SparseMatrix(2, 3)\nm.set(0, 2, 5.0)\nt = m.transpose()\nassert t.get(2, 0) == 5.0\nassert t.get(0, 2) == 0.0\n"
+      },
+      {
+        "name": "to_dense",
+        "code": "from sparse_matrix import SparseMatrix\nm = SparseMatrix(2, 2)\nm.set(0, 0, 1.0)\nm.set(1, 1, 2.0)\nassert m.to_dense() == [[1.0, 0.0], [0.0, 2.0]]\n"
+      },
+      {
+        "name": "multiply",
+        "code": "from sparse_matrix import SparseMatrix\na = SparseMatrix(2, 2)\na.set(0, 0, 1.0); a.set(0, 1, 2.0)\na.set(1, 0, 3.0); a.set(1, 1, 4.0)\nb = SparseMatrix(2, 1)\nb.set(0, 0, 5.0); b.set(1, 0, 6.0)\nc = a.multiply(b)\nassert c.get(0, 0) == 17.0  # 1*5 + 2*6\nassert c.get(1, 0) == 39.0  # 3*5 + 4*6\n"
+      }
+    ]
+  },
+  {
+    "task_id": "config_parser",
+    "tier": "complex",
+    "request": "Create a ConfigParser class for parsing INI-style configuration. Methods: parse(text: str) parses config text. Sections are [section_name], key-value pairs are key = value. Lines starting with # or ; are comments. Empty lines are ignored. get(section: str, key: str, default=None) returns value as string, or default. get_int(section: str, key: str, default: int = 0) -> int. get_bool(section: str, key: str, default: bool = False) -> bool (true/yes/1/on are True, false/no/0/off are False, case-insensitive). sections() -> list[str] returns sorted section names. items(section: str) -> dict[str, str] returns all key-value pairs in section. has_section(section: str) -> bool. set(section: str, key: str, value: str) sets a value (creates section if needed). to_string() -> str serializes back to INI format.",
+    "probes": [
+      {
+        "name": "parse_get",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('[database]\\nhost = localhost\\nport = 5432')\nassert cp.get('database', 'host') == 'localhost'\nassert cp.get('database', 'port') == '5432'\n"
+      },
+      {
+        "name": "get_int",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('[db]\\nport = 3306')\nassert cp.get_int('db', 'port') == 3306\nassert cp.get_int('db', 'timeout', default=30) == 30\n"
+      },
+      {
+        "name": "get_bool",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('[app]\\ndebug = true\\nverbose = no\\nenabled = 1')\nassert cp.get_bool('app', 'debug') is True\nassert cp.get_bool('app', 'verbose') is False\nassert cp.get_bool('app', 'enabled') is True\n"
+      },
+      {
+        "name": "comments_ignored",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('# comment\\n[section]\\n; another comment\\nkey = value')\nassert cp.get('section', 'key') == 'value'\nassert cp.has_section('section')\n"
+      },
+      {
+        "name": "sections",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('[beta]\\nx=1\\n[alpha]\\ny=2')\nassert cp.sections() == ['alpha', 'beta']\n"
+      },
+      {
+        "name": "set_serialize",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.set('new_section', 'key1', 'val1')\nassert cp.get('new_section', 'key1') == 'val1'\noutput = cp.to_string()\nassert 'new_section' in output\nassert 'key1' in output\n"
+      },
+      {
+        "name": "items",
+        "code": "from config_parser import ConfigParser\ncp = ConfigParser()\ncp.parse('[db]\\nhost = localhost\\nport = 5432')\nitems = cp.items('db')\nassert items == {'host': 'localhost', 'port': '5432'}\n"
+      }
+    ]
+  },
+  {
+    "task_id": "task_scheduler",
+    "tier": "complex",
+    "request": "Create a TaskScheduler class for scheduling tasks with dependencies. Methods: add_task(name: str, duration: int, dependencies: list[str] = None) adds a task. Raise ValueError if duplicate name. get_execution_order() -> list[str] returns topological sort order. Raise ValueError if circular dependency detected. get_critical_path() -> tuple[list[str], int] returns the longest path of tasks and total duration (sum of durations on the path). can_run(task_name: str) -> bool returns True if all dependencies are marked complete. complete(task_name: str) marks task as complete. Raise KeyError if not found. get_ready_tasks() -> list[str] returns sorted list of tasks whose dependencies are all complete and that are not yet complete themselves.",
+    "probes": [
+      {
+        "name": "add_and_order",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('build', 10, ['compile'])\nts.add_task('compile', 5)\nts.add_task('test', 3, ['build'])\norder = ts.get_execution_order()\nassert order.index('compile') < order.index('build')\nassert order.index('build') < order.index('test')\n"
+      },
+      {
+        "name": "circular_dep",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('A', 1, ['B'])\nts.add_task('B', 1, ['A'])\ntry:\n    ts.get_execution_order()\n    assert False\nexcept ValueError:\n    pass\n"
+      },
+      {
+        "name": "critical_path",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('A', 3)\nts.add_task('B', 5, ['A'])\nts.add_task('C', 2, ['A'])\nts.add_task('D', 4, ['B', 'C'])\npath, duration = ts.get_critical_path()\nassert duration == 12  # A(3) -> B(5) -> D(4) = 12\nassert 'A' in path and 'B' in path and 'D' in path\n"
+      },
+      {
+        "name": "ready_tasks",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('A', 1)\nts.add_task('B', 1)\nts.add_task('C', 1, ['A'])\nready = ts.get_ready_tasks()\nassert sorted(ready) == ['A', 'B']\nts.complete('A')\nready2 = ts.get_ready_tasks()\nassert sorted(ready2) == ['B', 'C']\n"
+      },
+      {
+        "name": "can_run",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('X', 1)\nts.add_task('Y', 1, ['X'])\nassert ts.can_run('X') is True\nassert ts.can_run('Y') is False\nts.complete('X')\nassert ts.can_run('Y') is True\n"
+      },
+      {
+        "name": "duplicate_task",
+        "code": "from task_scheduler import TaskScheduler\nts = TaskScheduler()\nts.add_task('A', 1)\ntry:\n    ts.add_task('A', 2)\n    assert False\nexcept ValueError:\n    pass\n"
+      }
+    ]
+  }
+]

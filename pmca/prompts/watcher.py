@@ -43,6 +43,41 @@ Output your review as JSON:
 ```
 """
 
+MICRO_FIX_PROMPT = """\
+Fix ONLY the function below based on this test failure.
+
+## Error
+Test: {test_name}
+Error: {error_type}: {error_detail}
+{source_context}
+
+## Current Function (from {file_path})
+```python
+{function_body}
+```
+
+## Specification (for reference)
+{spec}
+
+## Rules
+- Fix ONLY this function — do not add helpers, classes, or imports
+- Return the complete corrected function with proper indentation
+- Common bugs: wrong sort direction, missing None guard in comparisons, off-by-one, wrong count logic, empty collection edge case
+- If the function is a class method, include `self` parameter and proper indentation
+
+## Output
+Return ONLY the corrected function as a fenced code block:
+```python
+<corrected function here>
+```
+"""
+
+MICRO_FIX_SYSTEM = """\
+You are a surgical code fixer. You receive a single function and a specific test error.
+Fix ONLY the reported bug. Do NOT rewrite the function from scratch — make the minimal change needed.
+Return ONLY the fixed function in a Python code block.
+"""
+
 FINAL_VERIFICATION_PROMPT = """\
 Perform a final end-to-end verification of the completed project.
 

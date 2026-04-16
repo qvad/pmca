@@ -28,23 +28,26 @@ class ArchitectAgent(BaseAgent):
         self._max_children = max_children
         self._project_mode = project_mode
 
-    async def generate_spec(self, task: TaskNode, context: str) -> str:
+    def _get_system_prompt(self, role: AgentRole | None = None) -> str:
+        """Construct system prompt, injecting Architect skills."""
+        system = prompts.SYSTEM_PROMPT
+        from pmca.prompts import ARCHITECT_SKILLS
+        if ARCHITECT_SKILLS not in system:
+            system += "\n" + ARCHITECT_SKILLS
+        return system
+
+    async def generate_spec(self, task: TaskNode, context: str, think: bool | None = None) -> str:
         """Generate a design specification for a task."""
         prompt = prompts.DESIGN_SPEC_PROMPT.format(
             task_title=task.title,
             context=context,
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system, think=think)
         return response.strip()
 
-    async def decompose(self, task: TaskNode) -> list[dict]:
-        """Decide whether to decompose and return subtask definitions.
-
-        Returns a list of dicts with keys: title, type, description.
-        Returns empty list if the task is a leaf (no decomposition needed).
-        """
-        # Project prompt only at depth 0 (top-level file decomposition).
-        # Deeper levels use standard prompt which has a generous LEAF threshold.
+    async def decompose(self, task: TaskNode, think: bool | None = None) -> list[dict]:
+        """Decide whether to decompose and return subtask definitions."""
         if self._project_mode and task.depth == 0:
             prompt = prompts.DECOMPOSE_PROJECT_PROMPT.format(
                 spec=task.spec,
@@ -55,7 +58,8 @@ class ArchitectAgent(BaseAgent):
                 spec=task.spec,
                 max_children=self._max_children,
             )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system, think=think)
         response = response.strip()
 
         if response.upper().startswith("LEAF") or "LEAF" in response.upper().split("\n")[0]:
@@ -70,14 +74,15 @@ class ArchitectAgent(BaseAgent):
             )
         return subtasks
 
-    async def refine_spec(self, task: TaskNode, feedback: ReviewResult) -> str:
+    async def refine_spec(self, task: TaskNode, feedback: ReviewResult, think: bool | None = None) -> str:
         """Refine a specification based on reviewer feedback."""
         prompt = prompts.REFINE_SPEC_PROMPT.format(
             spec=task.spec,
             issues="\n".join(f"- {i}" for i in feedback.issues),
             suggestions="\n".join(f"- {s}" for s in feedback.suggestions),
         )
-        response = await self._generate(prompt, system=prompts.SYSTEM_PROMPT)
+        system = self._get_system_prompt()
+        response = await self._generate(prompt, system=system, think=think)
         return response.strip()
 
     def _parse_subtasks(self, response: str) -> list[dict]:

@@ -18,8 +18,9 @@ Rules:
   use 'gt', NOT '>' or 'greater_than'.
   Example: if spec says func_name is one of 'upper', 'lower' — use 'upper', NOT 'uppercase'
 - Use type hints for all Python function signatures
+- CRITICAL: Do NOT use `from typing import Number` — it does not exist. Use `float | int` or `int` instead.
 - CRITICAL: Every code block MUST start with a `# filepath: <path>` comment on the first line
-- Choose short, descriptive file names (e.g. `src/calculator.py`, NOT the full task description)
+- CRITICAL: File/module name must match the primary class name from the USER REQUEST (lowercase). E.g., if user asks for a `Graph` class, name the file `src/graph.py` — NOT `graph_undirected.py` or `graph_impl.py`. Class name must also match exactly.
 - Also generate corresponding test files with `# filepath: tests/test_<name>.py`
 - Do NOT fake implementations — every function must contain real logic
 - Handle edge cases only if the spec explicitly requires them
@@ -29,6 +30,10 @@ Rules:
   Example: word_count("hello world") → split → ["hello", "world"] → len=2 → assert == 2
   Example: filter(items, min=4) with values [3,5,2] → 3>=4? No, 5>=4? Yes, 2>=4? No → [item_with_5]
 - Do NOT guess expected test values — trace through your code logic to compute them
+- CRITICAL: Test removal/completion consistency — if your test calls a remove/delete/complete
+  method with a specific ID, trace WHICH EXACT item is removed. After removal, assert that the
+  REMAINING items exist, NOT the removed one.
+  Example: add("A",id=1), add("B",id=2), complete(id=1) → A is removed → assert remaining is B, NOT A
 - If you cannot implement something, say so honestly
 """
 
@@ -196,7 +201,7 @@ Fix the following code based on test failures and reviewer feedback.
 
 ## Current Code
 {code_blocks}
-
+{lessons}
 ## Issues / Test Failures
 {issues}
 
@@ -229,7 +234,7 @@ The implementation code appears CORRECT based on the specification, but the TEST
 
 ## Current Code
 {code_blocks}
-
+{lessons}
 ## Test Failures (values the code actually produces vs what the tests expect)
 {issues}
 
@@ -271,11 +276,108 @@ CRITICAL RULES:
 - Your test file should also import from sibling modules as needed
 """
 
+# ---------------------------------------------------------------------------
+# Test triage — per-failure investigation cascade
+# ---------------------------------------------------------------------------
+
+TRIAGE_DIAGNOSE_PROMPT = """\
+A test is failing. Your ONLY job is to determine: is the CODE wrong, or is the TEST wrong?
+
+## Original Specification
+{spec}
+
+## Code Under Test
+```python
+{code_function}
+```
+
+## Failing Test
+```python
+{test_function}
+```
+
+## Error
+{error}
+
+## Instructions
+1. Read the specification carefully — it is the source of truth
+2. Trace through the CODE with the test's input values, step by step
+3. Determine what the code ACTUALLY returns
+4. Compare with what the test EXPECTS
+5. Compare with what the SPECIFICATION says the answer should be
+
+## Output (JSON only)
+```json
+{{
+  "verdict": "code_wrong" or "test_wrong",
+  "reasoning": "one sentence explaining why",
+  "correct_value": "what the correct return value should be according to the spec",
+  "wrong_value": "what the wrong side currently produces"
+}}
+```
+"""
+
+TRIAGE_FIX_CODE_PROMPT = """\
+Fix this ONE function. The test is correct, the code is wrong.
+
+## Specification
+{spec}
+
+## Current Function (WRONG)
+```python
+{code_function}
+```
+
+## What it should do
+{diagnosis}
+
+## Output
+Output ONLY the corrected function as a fenced code block with `# filepath: {filepath}` on the first line.
+Include the full function, not just the changed lines.
+"""
+
+TRIAGE_FIX_TEST_PROMPT = """\
+Fix this ONE test. The code is correct, the test assertion is wrong.
+
+## Specification
+{spec}
+
+## Code (CORRECT — do not change)
+```python
+{code_function}
+```
+
+## Current Test (WRONG assertion)
+```python
+{test_function}
+```
+
+## What the correct value should be
+{diagnosis}
+
+## Output
+Output ONLY the corrected test function as a fenced code block with `# filepath: {filepath}` on the first line.
+Include the full test function, not just the changed lines.
+"""
+
 DEDUP_PREFIX = """\
 IMPORTANT: Your previous fix attempt produced IDENTICAL code to a prior attempt.
 You MUST try a fundamentally different approach this time.
 Consider: different algorithm, different data structure, or fixing the tests instead of the code.
 
+"""
+
+LESSONS_SECTION = """\
+
+## Lessons from Previous Attempts
+The following summarizes what went wrong in earlier fix attempts. Do NOT repeat these mistakes:
+{lessons_text}
+"""
+
+FAILURE_MEMORY_SECTION = """\
+
+## Similar Past Failures
+{memory_text}
 """
 
 # ---------------------------------------------------------------------------
@@ -326,4 +428,15 @@ SPEC_LITERALS_SECTION = """\
 
 ## String Literal Values (use EXACTLY these strings in your code)
 {literals_text}\
+"""
+
+THINKING_PROMPT_PREFIX = """\
+## Step-by-Step Reasoning (Mental Tracing)
+Before implementing, I will:
+1.  **Analyze the Interface:** List every method and its exact signature from the spec.
+2.  **Logic Trace:** For each method, I will trace the execution path for both common and edge cases (empty input, single element, zero).
+3.  **Test Verification:** For every test case I generate, I will manually compute the expected result step-by-step. I will NOT guess values.
+4.  **Consistency Check:** Ensure all string literals and class/method names match the specification EXACTLY.
+
+My reasoning starts here:
 """

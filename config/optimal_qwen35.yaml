@@ -1,0 +1,46 @@
+# Optimal config for qwen3.5-coder (LEAN MODE)
+# Optimized for speed and surgical precision.
+
+models:
+  architect:
+    name: "qwen3.5-coder"
+    context_window: 16384
+    temperature: 0.3
+  coder:
+    name: "qwen3.5-coder"
+    context_window: 16384
+    temperature: 0.2
+    think: false
+  coder_reasoning:
+    name: "qwen3.5-coder"
+    context_window: 16384
+    temperature: 0.2
+    think: true
+  reviewer:
+    name: "qwen3.5-coder"
+    context_window: 16384
+    temperature: 0.1
+    think: false
+  watcher:
+    name: "qwen3.5-coder"
+    context_window: 16384
+    temperature: 0.1
+    think: false
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+  best_of_n: 1
+  fresh_start_after: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

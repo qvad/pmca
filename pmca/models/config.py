@@ -13,6 +13,7 @@ import yaml
 class AgentRole(str, enum.Enum):
     ARCHITECT = "architect"
     CODER = "coder"
+    CODER_REASONING = "coder_reasoning"
     REVIEWER = "reviewer"
     WATCHER = "watcher"
     TESTER = "tester"
@@ -25,6 +26,9 @@ class ModelConfig:
     temperature: float = 0.3
     provider: str = "ollama"    # "ollama", "groq", "openai"
     api_base: str = ""          # Override API base URL (empty = default for provider)
+    think: bool | None = None   # Per-role think override (None = use call-site default)
+    max_tokens: int | None = None  # Cap completion tokens (num_predict); None = no limit
+    strategy_profile: str | None = None  # NEW: Link to model-specific "Skill Profiles"
 
 
 @dataclass
@@ -36,12 +40,30 @@ class CascadeConfig:
     best_of_n: int = 1           # Candidates per generation (1=disabled)
     fresh_start_after: int = 3    # Fix attempts before fresh start
     test_first: bool = False      # Enable test designer phase
+    cross_execution: bool = False  # Cross-test validation in best-of-N
+    defensive_guards: bool = False  # Preventive AST guards (Phase 2B)
+    runtime_fixes: bool = True     # Error-driven AST fixes in retry (Phase 2A)
+    mutation_oracle: bool = False   # MuTAP mutation oracle for test quality
+    failure_memory: bool = False    # ExpeRepair dual-memory for failure patterns
+    failure_memory_path: str = ".pmca/failure_memory"  # ChromaDB persist dir
+    reviewer_bypass_on_pass: bool = False  # Skip reviewer LLM when tests pass + no spec gaps
+    use_llm_reviewer: bool = True  # Allow disabling LLM reviewer globally
+    # Ablation flags — toggle individual technique groups for benchmarking
+    import_fixes: bool = True       # Package import rewriting + known imports injection
+    ast_fixes: bool = True          # Mutable defaults + attr/method shadowing repair
+    test_calibration: bool = True   # calibrate_tests + oracle_repair
+    micro_fix: bool = True          # Targeted single-function LLM micro-fix
+    lesson_injection: bool = True   # Inject LessonRecords into fix prompts
+    spec_literals: bool = True      # Extract string literals from spec before coding
+    test_triage: bool = True        # Per-failure investigation cascade (diagnose → fix → verify)
 
 
 @dataclass
 class WorkspaceConfig:
     path: str = "./workspace"
-    git_checkpoint: bool = True
+    git_checkpoint: bool = False
+    distillation_save_path: str = "./distillation_data"  # NEW: For collecting 'Perfect Specs'
+
 
 
 @dataclass
@@ -98,6 +120,9 @@ class Config:
                 temperature=mcfg.get("temperature", 0.3),
                 provider=mcfg.get("provider", "ollama"),
                 api_base=mcfg.get("api_base", ""),
+                think=mcfg.get("think", None),
+                max_tokens=mcfg.get("max_tokens", None),
+                strategy_profile=mcfg.get("strategy_profile", None),
             )
 
         cascade_raw = raw.get("cascade", {})
@@ -109,13 +134,30 @@ class Config:
             best_of_n=cascade_raw.get("best_of_n", 1),
             fresh_start_after=cascade_raw.get("fresh_start_after", 3),
             test_first=cascade_raw.get("test_first", False),
+            cross_execution=cascade_raw.get("cross_execution", False),
+            defensive_guards=cascade_raw.get("defensive_guards", False),
+            runtime_fixes=cascade_raw.get("runtime_fixes", True),
+            mutation_oracle=cascade_raw.get("mutation_oracle", False),
+            failure_memory=cascade_raw.get("failure_memory", False),
+            failure_memory_path=cascade_raw.get("failure_memory_path", ".pmca/failure_memory"),
+            reviewer_bypass_on_pass=cascade_raw.get("reviewer_bypass_on_pass", False),
+            use_llm_reviewer=cascade_raw.get("use_llm_reviewer", True),
+            import_fixes=cascade_raw.get("import_fixes", True),
+            ast_fixes=cascade_raw.get("ast_fixes", True),
+            test_calibration=cascade_raw.get("test_calibration", True),
+            micro_fix=cascade_raw.get("micro_fix", True),
+            lesson_injection=cascade_raw.get("lesson_injection", True),
+            spec_literals=cascade_raw.get("spec_literals", True),
+            test_triage=cascade_raw.get("test_triage", True),
         )
 
         ws_raw = raw.get("workspace", {})
         workspace = WorkspaceConfig(
             path=ws_raw.get("path", "./workspace"),
-            git_checkpoint=ws_raw.get("git_checkpoint", True),
+            git_checkpoint=ws_raw.get("git_checkpoint", False),
+            distillation_save_path=ws_raw.get("distillation_save_path", "./distillation_data"),
         )
+
 
         log_raw = raw.get("logging", {})
         logging_cfg = LoggingConfig(
@@ -185,4 +227,6 @@ class Config:
         )
 
     def get_model(self, role: AgentRole) -> ModelConfig:
+        if role == AgentRole.CODER_REASONING and role not in self.models:
+            return self.models[AgentRole.CODER]
         return self.models[role]

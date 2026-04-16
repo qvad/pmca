@@ -140,7 +140,7 @@ except IndexError:
     ),
 
     BenchTask(
-        name="counter",
+        name="word_count",
         tier="simple",
         request=(
             "Create a function word_count(text: str) -> dict[str, int] that counts "
@@ -149,10 +149,10 @@ except IndexError:
         ),
         expected_difficulty="simple",
         probes=[
-            Probe("basic", "from counter import word_count; assert word_count('hello world hello') == {'hello': 2, 'world': 1}"),
-            Probe("empty", "from counter import word_count; assert word_count('') == {}"),
-            Probe("case", "from counter import word_count; assert word_count('Cat cat CAT') == {'cat': 3}"),
-            Probe("single", "from counter import word_count; assert word_count('alone') == {'alone': 1}"),
+            Probe("basic", "from word_count import word_count; assert word_count('hello world hello') == {'hello': 2, 'world': 1}"),
+            Probe("empty", "from word_count import word_count; assert word_count('') == {}"),
+            Probe("case", "from word_count import word_count; assert word_count('Cat cat CAT') == {'cat': 3}"),
+            Probe("single", "from word_count import word_count; assert word_count('alone') == {'alone': 1}"),
         ],
     ),
 
@@ -793,6 +793,1541 @@ assert titles == ['Early', 'Late', 'No date']
 """),
         ],
     ),
+
+    # ── EXTENDED BENCHMARK — 25 NEW TASKS ──────────────────────────────
+
+    # ── SIMPLE TIER (5 new) ────────────────────────────────────────────
+
+    BenchTask(
+        name="temperature_converter",
+        tier="simple",
+        request=(
+            "Create a TemperatureConverter class with methods: "
+            "celsius_to_fahrenheit(c) returns float, "
+            "fahrenheit_to_celsius(f) returns float, "
+            "celsius_to_kelvin(c) returns float, "
+            "kelvin_to_celsius(k) returns float. "
+            "Raise ValueError if kelvin input is below 0 (absolute zero)."
+        ),
+        expected_difficulty="simple",
+        probes=[
+            Probe("c_to_f", "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_fahrenheit(0) == 32.0"),
+            Probe("c_to_f_100", "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_fahrenheit(100) == 212.0"),
+            Probe("f_to_c", "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.fahrenheit_to_celsius(32) == 0.0"),
+            Probe("c_to_k", "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.celsius_to_kelvin(0) == 273.15"),
+            Probe("k_to_c", "from temperature_converter import TemperatureConverter; t = TemperatureConverter(); assert t.kelvin_to_celsius(273.15) == 0.0"),
+            Probe("abs_zero", """\
+from temperature_converter import TemperatureConverter
+t = TemperatureConverter()
+try:
+    t.kelvin_to_celsius(-1)
+    assert False, 'Should raise ValueError'
+except ValueError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="string_utils",
+        tier="simple",
+        request=(
+            "Create a StringUtils class with methods: "
+            "reverse(s: str) -> str, "
+            "is_palindrome(s: str) -> bool (case-insensitive, ignoring spaces), "
+            "count_vowels(s: str) -> int (a, e, i, o, u, case-insensitive), "
+            "capitalize_words(s: str) -> str (capitalize first letter of each word)."
+        ),
+        expected_difficulty="simple",
+        probes=[
+            Probe("reverse", "from string_utils import StringUtils; s = StringUtils(); assert s.reverse('hello') == 'olleh'"),
+            Probe("palindrome_yes", "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('Racecar') is True"),
+            Probe("palindrome_no", "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('hello') is False"),
+            Probe("palindrome_spaces", "from string_utils import StringUtils; s = StringUtils(); assert s.is_palindrome('A man a plan a canal Panama') is True"),
+            Probe("vowels", "from string_utils import StringUtils; s = StringUtils(); assert s.count_vowels('Hello World') == 3"),
+            Probe("capitalize", "from string_utils import StringUtils; s = StringUtils(); assert s.capitalize_words('hello world foo') == 'Hello World Foo'"),
+        ],
+    ),
+
+    BenchTask(
+        name="queue_ds",
+        tier="simple",
+        request=(
+            "Create a Queue class (FIFO) in a file called queue_ds.py. "
+            "Methods: enqueue(item) adds to back, dequeue() removes and returns from front, "
+            "peek() returns front item without removing, "
+            "is_empty() -> bool, size() -> int. "
+            "dequeue() and peek() on empty queue should raise IndexError."
+        ),
+        expected_difficulty="simple",
+        probes=[
+            Probe("enqueue_dequeue", """\
+from queue_ds import Queue
+q = Queue()
+q.enqueue(1); q.enqueue(2); q.enqueue(3)
+assert q.dequeue() == 1
+assert q.dequeue() == 2
+"""),
+            Probe("fifo_order", """\
+from queue_ds import Queue
+q = Queue()
+q.enqueue('a'); q.enqueue('b'); q.enqueue('c')
+assert q.dequeue() == 'a'
+assert q.dequeue() == 'b'
+assert q.dequeue() == 'c'
+"""),
+            Probe("peek", "from queue_ds import Queue; q = Queue(); q.enqueue(42); assert q.peek() == 42; assert q.size() == 1"),
+            Probe("size_empty", "from queue_ds import Queue; q = Queue(); assert q.is_empty(); assert q.size() == 0"),
+            Probe("empty_dequeue", """\
+from queue_ds import Queue
+q = Queue()
+try:
+    q.dequeue()
+    assert False
+except IndexError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="number_utils",
+        tier="simple",
+        request=(
+            "Create the following functions: "
+            "is_prime(n: int) -> bool returns True if n is prime (n < 2 returns False), "
+            "factorial(n: int) -> int returns n! (raise ValueError for negative n), "
+            "fibonacci(n: int) -> list[int] returns first n Fibonacci numbers starting [0, 1, 1, 2, ...], "
+            "gcd(a: int, b: int) -> int returns greatest common divisor."
+        ),
+        expected_difficulty="simple",
+        probes=[
+            Probe("prime_yes", "from number_utils import is_prime; assert is_prime(7) is True; assert is_prime(13) is True"),
+            Probe("prime_no", "from number_utils import is_prime; assert is_prime(1) is False; assert is_prime(4) is False; assert is_prime(0) is False"),
+            Probe("factorial", "from number_utils import factorial; assert factorial(5) == 120; assert factorial(0) == 1"),
+            Probe("factorial_neg", """\
+from number_utils import factorial
+try:
+    factorial(-1)
+    assert False
+except ValueError:
+    pass
+"""),
+            Probe("fibonacci", "from number_utils import fibonacci; assert fibonacci(6) == [0, 1, 1, 2, 3, 5]"),
+            Probe("gcd", "from number_utils import gcd; assert gcd(12, 8) == 4; assert gcd(17, 5) == 1"),
+        ],
+    ),
+
+    BenchTask(
+        name="shopping_cart",
+        tier="simple",
+        request=(
+            "Create a ShoppingCart class. "
+            "Methods: add_item(name: str, price: float, quantity: int = 1), "
+            "remove_item(name: str) removes item (raise KeyError if not found), "
+            "get_total() -> float returns sum of price * quantity for all items, "
+            "item_count() -> int returns total number of items (sum of quantities), "
+            "clear() removes all items."
+        ),
+        expected_difficulty="simple",
+        probes=[
+            Probe("add_total", """\
+from shopping_cart import ShoppingCart
+c = ShoppingCart()
+c.add_item('Apple', 1.50, 3)
+c.add_item('Bread', 2.00)
+assert c.get_total() == 6.50
+"""),
+            Probe("remove", """\
+from shopping_cart import ShoppingCart
+c = ShoppingCart()
+c.add_item('Apple', 1.50)
+c.remove_item('Apple')
+assert c.get_total() == 0
+"""),
+            Probe("remove_missing", """\
+from shopping_cart import ShoppingCart
+c = ShoppingCart()
+try:
+    c.remove_item('Ghost')
+    assert False
+except KeyError:
+    pass
+"""),
+            Probe("item_count", """\
+from shopping_cart import ShoppingCart
+c = ShoppingCart()
+c.add_item('A', 1.0, 3)
+c.add_item('B', 2.0, 2)
+assert c.item_count() == 5
+"""),
+            Probe("clear", """\
+from shopping_cart import ShoppingCart
+c = ShoppingCart()
+c.add_item('A', 1.0)
+c.clear()
+assert c.get_total() == 0
+assert c.item_count() == 0
+"""),
+        ],
+    ),
+
+    # ── MEDIUM TIER (8 new) ────────────────────────────────────────────
+
+    BenchTask(
+        name="json_validator",
+        tier="medium",
+        request=(
+            "Create a JsonValidator class. "
+            "Methods: "
+            "validate(schema: dict, data: dict) -> tuple[bool, list[str]] "
+            "validates data against a schema and returns (is_valid, list_of_errors). "
+            "Schema format: each key maps to a dict with 'type' (str, int, float, bool, list, dict), "
+            "optional 'required' (bool, default True), optional 'min' / 'max' for numbers, "
+            "optional 'min_length' / 'max_length' for strings. "
+            "Return errors like 'field_name: expected type int, got str' or 'field_name: required field missing'."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("valid_data", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'name': {'type': 'str'}, 'age': {'type': 'int'}}
+ok, errors = v.validate(schema, {'name': 'Alice', 'age': 30})
+assert ok is True
+assert errors == []
+"""),
+            Probe("wrong_type", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'age': {'type': 'int'}}
+ok, errors = v.validate(schema, {'age': 'not_a_number'})
+assert ok is False
+assert len(errors) == 1
+assert 'age' in errors[0]
+"""),
+            Probe("missing_required", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'name': {'type': 'str', 'required': True}}
+ok, errors = v.validate(schema, {})
+assert ok is False
+assert any('required' in e.lower() or 'missing' in e.lower() for e in errors)
+"""),
+            Probe("optional_field", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'name': {'type': 'str'}, 'bio': {'type': 'str', 'required': False}}
+ok, errors = v.validate(schema, {'name': 'Alice'})
+assert ok is True
+"""),
+            Probe("min_max", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'age': {'type': 'int', 'min': 0, 'max': 150}}
+ok1, _ = v.validate(schema, {'age': 25})
+ok2, e2 = v.validate(schema, {'age': -1})
+ok3, e3 = v.validate(schema, {'age': 200})
+assert ok1 is True
+assert ok2 is False
+assert ok3 is False
+"""),
+            Probe("string_length", """\
+from json_validator import JsonValidator
+v = JsonValidator()
+schema = {'code': {'type': 'str', 'min_length': 2, 'max_length': 5}}
+ok1, _ = v.validate(schema, {'code': 'AB'})
+ok2, _ = v.validate(schema, {'code': 'A'})
+ok3, _ = v.validate(schema, {'code': 'ABCDEF'})
+assert ok1 is True
+assert ok2 is False
+assert ok3 is False
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="event_emitter",
+        tier="medium",
+        request=(
+            "Create an EventEmitter class. "
+            "Methods: on(event: str, callback: callable) registers a listener, "
+            "off(event: str, callback: callable) removes a specific listener, "
+            "emit(event: str, *args, **kwargs) calls all listeners for that event with the given args, "
+            "once(event: str, callback: callable) registers a listener that fires only once, "
+            "listener_count(event: str) -> int returns number of listeners for event."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("on_emit", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+results = []
+ee.on('data', lambda x: results.append(x))
+ee.emit('data', 42)
+assert results == [42]
+"""),
+            Probe("multiple_listeners", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+r1, r2 = [], []
+ee.on('data', lambda x: r1.append(x))
+ee.on('data', lambda x: r2.append(x))
+ee.emit('data', 'hello')
+assert r1 == ['hello'] and r2 == ['hello']
+"""),
+            Probe("off", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+results = []
+cb = lambda x: results.append(x)
+ee.on('data', cb)
+ee.off('data', cb)
+ee.emit('data', 99)
+assert results == []
+"""),
+            Probe("once", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+results = []
+ee.once('click', lambda: results.append('clicked'))
+ee.emit('click')
+ee.emit('click')
+assert results == ['clicked']
+"""),
+            Probe("listener_count", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+ee.on('a', lambda: None)
+ee.on('a', lambda: None)
+assert ee.listener_count('a') == 2
+assert ee.listener_count('b') == 0
+"""),
+            Probe("no_event", """\
+from event_emitter import EventEmitter
+ee = EventEmitter()
+ee.emit('nonexistent')  # should not raise
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="rate_limiter",
+        tier="medium",
+        request=(
+            "Create a RateLimiter class. Constructor takes max_requests (int) and "
+            "window_seconds (float). "
+            "Methods: allow(timestamp: float) -> bool returns True if the request is allowed "
+            "(fewer than max_requests in the last window_seconds), False otherwise. "
+            "get_usage(timestamp: float) -> dict returns {'allowed': int, 'remaining': int, 'reset_at': float} "
+            "where reset_at is the timestamp when the oldest request in the window expires. "
+            "reset() clears all tracked requests."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("allow_basic", """\
+from rate_limiter import RateLimiter
+rl = RateLimiter(3, 10.0)
+assert rl.allow(1.0) is True
+assert rl.allow(2.0) is True
+assert rl.allow(3.0) is True
+assert rl.allow(4.0) is False
+"""),
+            Probe("window_expiry", """\
+from rate_limiter import RateLimiter
+rl = RateLimiter(2, 5.0)
+assert rl.allow(1.0) is True
+assert rl.allow(2.0) is True
+assert rl.allow(3.0) is False
+assert rl.allow(7.0) is True  # 1.0 expired (7-5=2, > 1.0)
+"""),
+            Probe("usage", """\
+from rate_limiter import RateLimiter
+rl = RateLimiter(3, 10.0)
+rl.allow(1.0)
+rl.allow(5.0)
+usage = rl.get_usage(6.0)
+assert usage['allowed'] == 2
+assert usage['remaining'] == 1
+assert usage['reset_at'] == 11.0  # oldest(1.0) + window(10.0)
+"""),
+            Probe("reset", """\
+from rate_limiter import RateLimiter
+rl = RateLimiter(1, 60.0)
+rl.allow(1.0)
+assert rl.allow(2.0) is False
+rl.reset()
+assert rl.allow(3.0) is True
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="interval_merger",
+        tier="medium",
+        request=(
+            "Create a function merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]] "
+            "that takes a list of (start, end) intervals and merges overlapping ones. "
+            "Return sorted list of merged intervals. "
+            "Also create insert_interval(intervals: list[tuple[int, int]], new: tuple[int, int]) -> list[tuple[int, int]] "
+            "that inserts a new interval into a sorted non-overlapping list and merges if needed. "
+            "Also create is_overlap(a: tuple[int, int], b: tuple[int, int]) -> bool."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("merge_basic", """\
+from interval_merger import merge_intervals
+result = merge_intervals([(1,3), (2,6), (8,10), (15,18)])
+assert result == [(1,6), (8,10), (15,18)]
+"""),
+            Probe("merge_all", """\
+from interval_merger import merge_intervals
+result = merge_intervals([(1,4), (2,5), (3,6)])
+assert result == [(1,6)]
+"""),
+            Probe("merge_none", """\
+from interval_merger import merge_intervals
+result = merge_intervals([(1,2), (5,6), (9,10)])
+assert result == [(1,2), (5,6), (9,10)]
+"""),
+            Probe("merge_empty", "from interval_merger import merge_intervals; assert merge_intervals([]) == []"),
+            Probe("insert", """\
+from interval_merger import insert_interval
+result = insert_interval([(1,3), (6,9)], (2,5))
+assert result == [(1,5), (6,9)]
+"""),
+            Probe("overlap", """\
+from interval_merger import is_overlap
+assert is_overlap((1,5), (3,7)) is True
+assert is_overlap((1,3), (5,7)) is False
+assert is_overlap((1,5), (5,7)) is True
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="trie",
+        tier="medium",
+        request=(
+            "Create a Trie class (prefix tree) for strings. "
+            "Methods: insert(word: str), search(word: str) -> bool (exact match), "
+            "starts_with(prefix: str) -> bool (any word starts with prefix), "
+            "delete(word: str) -> bool (returns False if not found), "
+            "words_with_prefix(prefix: str) -> list[str] returns all words with given prefix sorted alphabetically, "
+            "size() -> int returns number of words stored."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("insert_search", """\
+from trie import Trie
+t = Trie()
+t.insert('apple')
+assert t.search('apple') is True
+assert t.search('app') is False
+"""),
+            Probe("starts_with", """\
+from trie import Trie
+t = Trie()
+t.insert('apple')
+t.insert('application')
+assert t.starts_with('app') is True
+assert t.starts_with('xyz') is False
+"""),
+            Probe("prefix_words", """\
+from trie import Trie
+t = Trie()
+t.insert('car'); t.insert('card'); t.insert('care'); t.insert('dog')
+result = t.words_with_prefix('car')
+assert result == ['car', 'card', 'care']
+"""),
+            Probe("delete", """\
+from trie import Trie
+t = Trie()
+t.insert('hello')
+assert t.delete('hello') is True
+assert t.search('hello') is False
+assert t.delete('hello') is False
+"""),
+            Probe("size", """\
+from trie import Trie
+t = Trie()
+t.insert('a'); t.insert('b'); t.insert('c')
+assert t.size() == 3
+t.delete('b')
+assert t.size() == 2
+"""),
+            Probe("delete_prefix_preserved", """\
+from trie import Trie
+t = Trie()
+t.insert('app')
+t.insert('apple')
+t.delete('apple')
+assert t.search('app') is True
+assert t.search('apple') is False
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="state_machine",
+        tier="medium",
+        request=(
+            "Create a StateMachine class. Constructor takes initial_state (str). "
+            "Methods: add_transition(from_state: str, event: str, to_state: str, action: callable = None) "
+            "registers a transition. "
+            "trigger(event: str) -> str transitions to new state if valid transition exists, "
+            "calls action if provided, returns new state. Raise ValueError if no transition. "
+            "current_state -> str property. "
+            "history() -> list[tuple[str, str, str]] returns list of (from_state, event, to_state). "
+            "can_trigger(event: str) -> bool returns whether event is valid from current state."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("basic_transition", """\
+from state_machine import StateMachine
+sm = StateMachine('idle')
+sm.add_transition('idle', 'start', 'running')
+result = sm.trigger('start')
+assert result == 'running'
+assert sm.current_state == 'running'
+"""),
+            Probe("invalid_event", """\
+from state_machine import StateMachine
+sm = StateMachine('idle')
+try:
+    sm.trigger('invalid')
+    assert False
+except ValueError:
+    pass
+"""),
+            Probe("action_called", """\
+from state_machine import StateMachine
+log = []
+sm = StateMachine('off')
+sm.add_transition('off', 'press', 'on', action=lambda: log.append('turned_on'))
+sm.trigger('press')
+assert log == ['turned_on']
+"""),
+            Probe("history", """\
+from state_machine import StateMachine
+sm = StateMachine('a')
+sm.add_transition('a', 'go', 'b')
+sm.add_transition('b', 'go', 'c')
+sm.trigger('go')
+sm.trigger('go')
+h = sm.history()
+assert h == [('a', 'go', 'b'), ('b', 'go', 'c')]
+"""),
+            Probe("can_trigger", """\
+from state_machine import StateMachine
+sm = StateMachine('locked')
+sm.add_transition('locked', 'unlock', 'unlocked')
+assert sm.can_trigger('unlock') is True
+assert sm.can_trigger('lock') is False
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="expression_evaluator",
+        tier="medium",
+        request=(
+            "Create a function evaluate(expression: str) -> float that evaluates "
+            "simple arithmetic expressions with +, -, *, / operators and parentheses. "
+            "Respect operator precedence (* and / before + and -). "
+            "Handle spaces. Raise ValueError for invalid expressions (unbalanced parens, "
+            "division by zero, invalid characters)."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("simple_add", "from expression_evaluator import evaluate; assert evaluate('2 + 3') == 5.0"),
+            Probe("precedence", "from expression_evaluator import evaluate; assert evaluate('2 + 3 * 4') == 14.0"),
+            Probe("parens", "from expression_evaluator import evaluate; assert evaluate('(2 + 3) * 4') == 20.0"),
+            Probe("nested_parens", "from expression_evaluator import evaluate; assert evaluate('((1 + 2) * (3 + 4))') == 21.0"),
+            Probe("division", "from expression_evaluator import evaluate; assert evaluate('10 / 4') == 2.5"),
+            Probe("div_zero", """\
+from expression_evaluator import evaluate
+try:
+    evaluate('5 / 0')
+    assert False
+except (ValueError, ZeroDivisionError):
+    pass
+"""),
+            Probe("complex_expr", "from expression_evaluator import evaluate; assert abs(evaluate('3.5 * 2 + 1') - 8.0) < 0.001"),
+        ],
+    ),
+
+    BenchTask(
+        name="graph",
+        tier="medium",
+        request=(
+            "Create a Graph class for an undirected, unweighted graph. "
+            "Methods: add_vertex(v), add_edge(v1, v2), "
+            "has_vertex(v) -> bool, has_edge(v1, v2) -> bool, "
+            "neighbors(v) -> list (sorted), remove_edge(v1, v2), "
+            "bfs(start, end) -> list returns shortest path as list of vertices (empty if no path), "
+            "connected_components() -> list[list] returns list of components (each sorted, outer list sorted by first element)."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("add_vertex_edge", """\
+from graph import Graph
+g = Graph()
+g.add_vertex('A'); g.add_vertex('B')
+g.add_edge('A', 'B')
+assert g.has_vertex('A')
+assert g.has_edge('A', 'B')
+assert g.has_edge('B', 'A')  # undirected
+"""),
+            Probe("neighbors", """\
+from graph import Graph
+g = Graph()
+g.add_vertex('A'); g.add_vertex('B'); g.add_vertex('C')
+g.add_edge('A', 'B'); g.add_edge('A', 'C')
+assert g.neighbors('A') == ['B', 'C']
+"""),
+            Probe("bfs_path", """\
+from graph import Graph
+g = Graph()
+for v in ['A','B','C','D']:
+    g.add_vertex(v)
+g.add_edge('A','B'); g.add_edge('B','C'); g.add_edge('C','D')
+path = g.bfs('A', 'D')
+assert path == ['A','B','C','D']
+"""),
+            Probe("bfs_no_path", """\
+from graph import Graph
+g = Graph()
+g.add_vertex('A'); g.add_vertex('B')
+path = g.bfs('A', 'B')
+assert path == []
+"""),
+            Probe("components", """\
+from graph import Graph
+g = Graph()
+for v in ['A','B','C','D','E']:
+    g.add_vertex(v)
+g.add_edge('A','B'); g.add_edge('D','E')
+cc = g.connected_components()
+assert len(cc) == 3  # {A,B}, {C}, {D,E}
+"""),
+            Probe("remove_edge", """\
+from graph import Graph
+g = Graph()
+g.add_vertex('A'); g.add_vertex('B')
+g.add_edge('A', 'B')
+g.remove_edge('A', 'B')
+assert g.has_edge('A', 'B') is False
+"""),
+        ],
+    ),
+
+    # ── COMPLEX TIER (12 new) ──────────────────────────────────────────
+
+    BenchTask(
+        name="mini_orm",
+        tier="complex",
+        request=(
+            "Create a Table class that acts as a simple in-memory ORM. "
+            "Constructor takes name (str) and columns (list of str). "
+            "Methods: insert(row: dict) -> int inserts a row and returns auto-incremented id. "
+            "All specified columns must be present in row (raise ValueError otherwise). "
+            "select(where: dict = None) -> list[dict] returns rows matching all key=value pairs in where (None = all). "
+            "update(row_id: int, values: dict) -> bool updates the row, returns False if not found. "
+            "delete(row_id: int) -> bool deletes row, returns False if not found. "
+            "count(where: dict = None) -> int returns count of matching rows. "
+            "Each returned row dict includes an 'id' key."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("insert_select", """\
+from mini_orm import Table
+t = Table('users', ['name', 'age'])
+id1 = t.insert({'name': 'Alice', 'age': 30})
+id2 = t.insert({'name': 'Bob', 'age': 25})
+assert id1 == 1 and id2 == 2
+rows = t.select()
+assert len(rows) == 2
+assert rows[0]['name'] == 'Alice'
+"""),
+            Probe("select_where", """\
+from mini_orm import Table
+t = Table('users', ['name', 'age'])
+t.insert({'name': 'Alice', 'age': 30})
+t.insert({'name': 'Bob', 'age': 25})
+t.insert({'name': 'Carol', 'age': 30})
+result = t.select({'age': 30})
+assert len(result) == 2
+names = sorted(r['name'] for r in result)
+assert names == ['Alice', 'Carol']
+"""),
+            Probe("update", """\
+from mini_orm import Table
+t = Table('users', ['name', 'age'])
+t.insert({'name': 'Alice', 'age': 30})
+assert t.update(1, {'age': 31}) is True
+assert t.select({'id': 1})[0]['age'] == 31 if t.select({'id': 1}) else t.select()[0]['age'] == 31
+"""),
+            Probe("delete", """\
+from mini_orm import Table
+t = Table('users', ['name', 'age'])
+t.insert({'name': 'Alice', 'age': 30})
+assert t.delete(1) is True
+assert t.delete(1) is False
+assert t.count() == 0
+"""),
+            Probe("count", """\
+from mini_orm import Table
+t = Table('items', ['type'])
+t.insert({'type': 'A'}); t.insert({'type': 'B'}); t.insert({'type': 'A'})
+assert t.count() == 3
+assert t.count({'type': 'A'}) == 2
+"""),
+            Probe("missing_column", """\
+from mini_orm import Table
+t = Table('users', ['name', 'age'])
+try:
+    t.insert({'name': 'Alice'})  # missing 'age'
+    assert False
+except ValueError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="scheduler",
+        tier="complex",
+        request=(
+            "Create a Scheduler class for scheduling non-overlapping time slots. "
+            "Methods: book(start: int, end: int) -> bool books a slot if it doesn't overlap "
+            "with existing bookings (returns True), otherwise returns False. start < end required. "
+            "cancel(start: int, end: int) -> bool cancels exact slot (returns False if not found). "
+            "get_bookings() -> list[tuple[int, int]] returns all bookings sorted by start time. "
+            "is_available(start: int, end: int) -> bool checks if slot is free. "
+            "next_available(after: int, duration: int) -> tuple[int, int] returns the next available "
+            "slot of given duration starting from 'after'. "
+            "Raise ValueError if start >= end."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("book_basic", """\
+from scheduler import Scheduler
+s = Scheduler()
+assert s.book(9, 10) is True
+assert s.book(10, 11) is True
+assert s.book(9, 11) is False  # overlaps
+"""),
+            Probe("overlap_check", """\
+from scheduler import Scheduler
+s = Scheduler()
+s.book(10, 20)
+assert s.is_available(5, 10) is True
+assert s.is_available(5, 15) is False
+assert s.is_available(15, 25) is False
+assert s.is_available(20, 25) is True
+"""),
+            Probe("cancel", """\
+from scheduler import Scheduler
+s = Scheduler()
+s.book(9, 10)
+assert s.cancel(9, 10) is True
+assert s.cancel(9, 10) is False
+assert s.book(9, 10) is True
+"""),
+            Probe("get_bookings", """\
+from scheduler import Scheduler
+s = Scheduler()
+s.book(15, 20)
+s.book(5, 10)
+bookings = s.get_bookings()
+assert bookings == [(5, 10), (15, 20)]
+"""),
+            Probe("next_available", """\
+from scheduler import Scheduler
+s = Scheduler()
+s.book(10, 15)
+s.book(20, 25)
+slot = s.next_available(0, 5)
+assert slot == (0, 5)
+slot2 = s.next_available(10, 5)
+assert slot2 == (15, 20)
+slot3 = s.next_available(21, 5)
+assert slot3 == (25, 30)
+"""),
+            Probe("invalid_range", """\
+from scheduler import Scheduler
+s = Scheduler()
+try:
+    s.book(10, 10)
+    assert False
+except ValueError:
+    pass
+try:
+    s.book(10, 5)
+    assert False
+except ValueError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="text_processor",
+        tier="complex",
+        request=(
+            "Create a TextProcessor class. "
+            "Methods: "
+            "tokenize(text: str) -> list[str] splits text into words (lowercase, strip punctuation from edges). "
+            "ngrams(text: str, n: int) -> list[tuple[str, ...]] returns n-grams from tokens. "
+            "tf(text: str) -> dict[str, float] returns term frequency (count/total) for each token. "
+            "similarity(text1: str, text2: str) -> float returns Jaccard similarity (intersection/union of token sets). "
+            "summarize(text: str, n: int) -> str returns the n most frequent non-stopword tokens "
+            "joined by space. Stopwords: a, an, the, is, in, on, at, to, and, of, for, it, this, that."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("tokenize", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+tokens = tp.tokenize('Hello, World! Python is great.')
+assert tokens == ['hello', 'world', 'python', 'is', 'great']
+"""),
+            Probe("ngrams", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+result = tp.ngrams('one two three four', 2)
+assert result == [('one', 'two'), ('two', 'three'), ('three', 'four')]
+"""),
+            Probe("tf", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+result = tp.tf('the cat sat on the mat')
+assert abs(result['the'] - 2/6) < 0.001
+assert abs(result['cat'] - 1/6) < 0.001
+"""),
+            Probe("similarity", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+sim = tp.similarity('the cat sat', 'the cat ran')
+# intersection={the,cat}, union={the,cat,sat,ran} => 2/4 = 0.5
+assert abs(sim - 0.5) < 0.001
+"""),
+            Probe("similarity_identical", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+assert tp.similarity('hello world', 'hello world') == 1.0
+assert tp.similarity('', '') == 0.0 or tp.similarity('', '') == 1.0  # edge case
+"""),
+            Probe("summarize", """\
+from text_processor import TextProcessor
+tp = TextProcessor()
+text = 'the python python language is a great python language'
+result = tp.summarize(text, 2)
+# python(3) and language(2) are most frequent non-stopwords
+words = result.split()
+assert 'python' in words
+assert 'language' in words
+assert len(words) == 2
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="binary_search_tree",
+        tier="complex",
+        request=(
+            "Create a BST class (Binary Search Tree) for integers. "
+            "Methods: insert(value: int), search(value: int) -> bool, "
+            "delete(value: int) -> bool (returns False if not found), "
+            "inorder() -> list[int] (sorted), "
+            "min_value() -> int (raise ValueError if empty), "
+            "max_value() -> int (raise ValueError if empty), "
+            "height() -> int (empty tree has height 0, single node has height 1), "
+            "size() -> int."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("insert_search", """\
+from binary_search_tree import BST
+tree = BST()
+tree.insert(5); tree.insert(3); tree.insert(7)
+assert tree.search(5) is True
+assert tree.search(3) is True
+assert tree.search(99) is False
+"""),
+            Probe("inorder", """\
+from binary_search_tree import BST
+tree = BST()
+for v in [5, 3, 7, 1, 4]:
+    tree.insert(v)
+assert tree.inorder() == [1, 3, 4, 5, 7]
+"""),
+            Probe("delete_leaf", """\
+from binary_search_tree import BST
+tree = BST()
+tree.insert(5); tree.insert(3); tree.insert(7)
+assert tree.delete(3) is True
+assert tree.search(3) is False
+assert tree.inorder() == [5, 7]
+"""),
+            Probe("delete_two_children", """\
+from binary_search_tree import BST
+tree = BST()
+for v in [5, 3, 7, 1, 4, 6, 8]:
+    tree.insert(v)
+tree.delete(5)  # root with two children
+result = tree.inorder()
+assert 5 not in result
+assert sorted(result) == result  # still valid BST
+assert len(result) == 6
+"""),
+            Probe("min_max", """\
+from binary_search_tree import BST
+tree = BST()
+for v in [10, 5, 15, 3, 7]:
+    tree.insert(v)
+assert tree.min_value() == 3
+assert tree.max_value() == 15
+"""),
+            Probe("height", """\
+from binary_search_tree import BST
+tree = BST()
+assert tree.height() == 0
+tree.insert(5)
+assert tree.height() == 1
+tree.insert(3); tree.insert(7)
+assert tree.height() == 2
+"""),
+            Probe("size", """\
+from binary_search_tree import BST
+tree = BST()
+assert tree.size() == 0
+tree.insert(5); tree.insert(3); tree.insert(7)
+assert tree.size() == 3
+tree.delete(3)
+assert tree.size() == 2
+"""),
+            Probe("empty_min", """\
+from binary_search_tree import BST
+tree = BST()
+try:
+    tree.min_value()
+    assert False
+except ValueError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="inventory_system",
+        tier="complex",
+        request=(
+            "Create an Inventory class for managing products. "
+            "Methods: add_product(name: str, price: float, quantity: int, category: str) -> int "
+            "returns auto-incremented product id. Raise ValueError if price < 0 or quantity < 0. "
+            "restock(product_id: int, quantity: int) adds quantity. Raise KeyError if not found. "
+            "sell(product_id: int, quantity: int) -> float subtracts quantity, returns total price. "
+            "Raise KeyError if not found. Raise ValueError if insufficient stock. "
+            "get_product(product_id: int) -> dict with keys 'id', 'name', 'price', 'quantity', 'category'. "
+            "Raise KeyError if not found. "
+            "search(query: str = None, category: str = None, in_stock: bool = None) -> list[dict] "
+            "filters products. query matches name (case-insensitive substring). "
+            "low_stock(threshold: int = 5) -> list[dict] returns products with quantity <= threshold "
+            "sorted by quantity ascending. "
+            "total_value() -> float returns sum of price * quantity for all products."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("add_get", """\
+from inventory_system import Inventory
+inv = Inventory()
+id1 = inv.add_product('Widget', 9.99, 100, 'parts')
+p = inv.get_product(id1)
+assert p['name'] == 'Widget'
+assert p['price'] == 9.99
+assert p['quantity'] == 100
+"""),
+            Probe("sell", """\
+from inventory_system import Inventory
+inv = Inventory()
+id1 = inv.add_product('Widget', 10.0, 50, 'parts')
+total = inv.sell(id1, 3)
+assert total == 30.0
+assert inv.get_product(id1)['quantity'] == 47
+"""),
+            Probe("sell_insufficient", """\
+from inventory_system import Inventory
+inv = Inventory()
+id1 = inv.add_product('Widget', 10.0, 2, 'parts')
+try:
+    inv.sell(id1, 5)
+    assert False
+except ValueError:
+    pass
+assert inv.get_product(id1)['quantity'] == 2  # unchanged
+"""),
+            Probe("restock", """\
+from inventory_system import Inventory
+inv = Inventory()
+id1 = inv.add_product('Widget', 5.0, 10, 'parts')
+inv.restock(id1, 20)
+assert inv.get_product(id1)['quantity'] == 30
+"""),
+            Probe("search", """\
+from inventory_system import Inventory
+inv = Inventory()
+inv.add_product('Blue Widget', 5.0, 10, 'parts')
+inv.add_product('Red Widget', 6.0, 20, 'parts')
+inv.add_product('Green Gadget', 15.0, 5, 'tools')
+result = inv.search(query='widget')
+assert len(result) == 2
+result2 = inv.search(category='tools')
+assert len(result2) == 1
+"""),
+            Probe("low_stock", """\
+from inventory_system import Inventory
+inv = Inventory()
+inv.add_product('A', 1.0, 3, 'x')
+inv.add_product('B', 1.0, 10, 'x')
+inv.add_product('C', 1.0, 1, 'x')
+low = inv.low_stock(5)
+assert len(low) == 2
+assert low[0]['name'] == 'C'  # quantity 1 first
+assert low[1]['name'] == 'A'  # quantity 3 second
+"""),
+            Probe("total_value", """\
+from inventory_system import Inventory
+inv = Inventory()
+inv.add_product('A', 10.0, 5, 'x')
+inv.add_product('B', 20.0, 3, 'x')
+assert inv.total_value() == 110.0
+"""),
+            Probe("invalid_price", """\
+from inventory_system import Inventory
+inv = Inventory()
+try:
+    inv.add_product('Bad', -5.0, 10, 'x')
+    assert False
+except ValueError:
+    pass
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="cache_system",
+        tier="complex",
+        request=(
+            "Create a Cache class with TTL (time-to-live) support. "
+            "Constructor takes default_ttl (float, seconds). "
+            "Methods: set(key: str, value, ttl: float = None) stores value with expiry. "
+            "If ttl is None, use default_ttl. "
+            "get(key: str, current_time: float = None) -> value, returns None if expired or not found. "
+            "If current_time not provided, use time.time(). "
+            "delete(key: str) -> bool removes key, returns False if not found. "
+            "clear() removes all entries. "
+            "cleanup(current_time: float = None) removes all expired entries. "
+            "size() -> int returns number of non-expired entries. "
+            "keys() -> list[str] returns non-expired keys sorted."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("set_get", """\
+from cache_system import Cache
+import time
+c = Cache(60.0)
+now = time.time()
+c.set('key1', 'value1')
+assert c.get('key1', now) == 'value1'
+"""),
+            Probe("ttl_expiry", """\
+from cache_system import Cache
+c = Cache(10.0)
+c.set('key1', 'val', ttl=5.0)
+assert c.get('key1', current_time=100.0) == 'val'  # depends on when set
+# Set with explicit timing
+c2 = Cache(10.0)
+c2.set('k', 'v', ttl=5.0)
+import time
+now = time.time()
+assert c2.get('k', now + 1) == 'v'     # not expired
+assert c2.get('k', now + 100) is None   # expired
+"""),
+            Probe("delete", """\
+from cache_system import Cache
+c = Cache(60.0)
+c.set('key1', 'value1')
+assert c.delete('key1') is True
+assert c.get('key1') is None
+assert c.delete('key1') is False
+"""),
+            Probe("clear_size", """\
+from cache_system import Cache
+c = Cache(60.0)
+c.set('a', 1); c.set('b', 2); c.set('c', 3)
+assert c.size() == 3
+c.clear()
+assert c.size() == 0
+"""),
+            Probe("keys_sorted", """\
+from cache_system import Cache
+c = Cache(60.0)
+c.set('banana', 1); c.set('apple', 2); c.set('cherry', 3)
+assert c.keys() == ['apple', 'banana', 'cherry']
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="csv_parser",
+        tier="complex",
+        request=(
+            "Create a CSVParser class. "
+            "Methods: parse(text: str, delimiter: str = ',', has_header: bool = True) -> list[dict] "
+            "parses CSV text. If has_header, first line is column names and returns list of dicts. "
+            "If not has_header, returns list of lists. "
+            "Handle quoted fields (double quotes around fields containing delimiter or newlines). "
+            "to_csv(data: list[dict], delimiter: str = ',') -> str converts list of dicts back to CSV string "
+            "with header row. "
+            "filter_rows(data: list[dict], column: str, value) -> list[dict] returns rows where column equals value. "
+            "sort_rows(data: list[dict], column: str, reverse: bool = False) -> list[dict] sorts by column."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("parse_basic", """\
+from csv_parser import CSVParser
+p = CSVParser()
+text = 'name,age\\nAlice,30\\nBob,25'
+result = p.parse(text)
+assert len(result) == 2
+assert result[0]['name'] == 'Alice'
+assert result[0]['age'] == '30'
+"""),
+            Probe("parse_no_header", """\
+from csv_parser import CSVParser
+p = CSVParser()
+text = 'a,b,c\\n1,2,3'
+result = p.parse(text, has_header=False)
+assert result == [['a','b','c'], ['1','2','3']]
+"""),
+            Probe("parse_quoted", """\
+from csv_parser import CSVParser
+p = CSVParser()
+text = 'name,desc\\nAlice,"Hello, World"'
+result = p.parse(text)
+assert result[0]['desc'] == 'Hello, World'
+"""),
+            Probe("to_csv", """\
+from csv_parser import CSVParser
+p = CSVParser()
+data = [{'name': 'Alice', 'age': '30'}, {'name': 'Bob', 'age': '25'}]
+csv = p.to_csv(data)
+lines = csv.strip().split('\\n')
+assert len(lines) == 3  # header + 2 rows
+assert 'name' in lines[0] and 'age' in lines[0]
+"""),
+            Probe("filter_rows", """\
+from csv_parser import CSVParser
+p = CSVParser()
+data = [{'type': 'A', 'val': '1'}, {'type': 'B', 'val': '2'}, {'type': 'A', 'val': '3'}]
+result = p.filter_rows(data, 'type', 'A')
+assert len(result) == 2
+"""),
+            Probe("sort_rows", """\
+from csv_parser import CSVParser
+p = CSVParser()
+data = [{'name': 'Charlie'}, {'name': 'Alice'}, {'name': 'Bob'}]
+result = p.sort_rows(data, 'name')
+assert [r['name'] for r in result] == ['Alice', 'Bob', 'Charlie']
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="vector2d",
+        tier="complex",
+        request=(
+            "Create a Vector2D class. Constructor takes x (float) and y (float). "
+            "Properties: x, y (read-only). "
+            "Methods: add(other) -> Vector2D, subtract(other) -> Vector2D, "
+            "dot(other) -> float (dot product), "
+            "magnitude() -> float (length), "
+            "normalize() -> Vector2D (unit vector, raise ValueError if zero vector), "
+            "rotate(angle_degrees: float) -> Vector2D (rotate counterclockwise), "
+            "distance_to(other) -> float, "
+            "angle_to(other) -> float (angle in degrees between two vectors), "
+            "__eq__ for comparison (with floating point tolerance 1e-9), "
+            "__repr__ returns 'Vector2D(x, y)'."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("add_sub", """\
+from vector2d import Vector2D
+a = Vector2D(1, 2)
+b = Vector2D(3, 4)
+c = a.add(b)
+assert abs(c.x - 4) < 1e-9 and abs(c.y - 6) < 1e-9
+d = a.subtract(b)
+assert abs(d.x - (-2)) < 1e-9 and abs(d.y - (-2)) < 1e-9
+"""),
+            Probe("dot", "from vector2d import Vector2D; assert abs(Vector2D(1,0).dot(Vector2D(0,1))) < 1e-9"),
+            Probe("magnitude", """\
+from vector2d import Vector2D
+import math
+v = Vector2D(3, 4)
+assert abs(v.magnitude() - 5.0) < 1e-9
+"""),
+            Probe("normalize", """\
+from vector2d import Vector2D
+v = Vector2D(3, 4)
+n = v.normalize()
+assert abs(n.magnitude() - 1.0) < 1e-9
+"""),
+            Probe("normalize_zero", """\
+from vector2d import Vector2D
+try:
+    Vector2D(0, 0).normalize()
+    assert False
+except ValueError:
+    pass
+"""),
+            Probe("rotate", """\
+from vector2d import Vector2D
+v = Vector2D(1, 0)
+r = v.rotate(90)
+assert abs(r.x) < 1e-6 and abs(r.y - 1) < 1e-6
+"""),
+            Probe("distance", """\
+from vector2d import Vector2D
+a = Vector2D(0, 0)
+b = Vector2D(3, 4)
+assert abs(a.distance_to(b) - 5.0) < 1e-9
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="permission_system",
+        tier="complex",
+        request=(
+            "Create a PermissionSystem class for role-based access control. "
+            "Methods: create_role(role: str) creates a role (raise ValueError if exists). "
+            "delete_role(role: str) removes role (raise KeyError if not found). "
+            "grant(role: str, permission: str) adds permission to role. "
+            "revoke(role: str, permission: str) removes permission (raise KeyError if not found). "
+            "assign_role(user: str, role: str) assigns role to user. "
+            "unassign_role(user: str, role: str) removes role from user. "
+            "has_permission(user: str, permission: str) -> bool checks if any of user's roles has permission. "
+            "get_permissions(user: str) -> set[str] returns all permissions across all roles. "
+            "get_users_with_permission(permission: str) -> list[str] returns sorted list of users."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("create_grant", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+ps.create_role('admin')
+ps.grant('admin', 'read')
+ps.grant('admin', 'write')
+ps.assign_role('alice', 'admin')
+assert ps.has_permission('alice', 'read') is True
+assert ps.has_permission('alice', 'delete') is False
+"""),
+            Probe("multi_role", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+ps.create_role('viewer')
+ps.create_role('editor')
+ps.grant('viewer', 'read')
+ps.grant('editor', 'write')
+ps.assign_role('bob', 'viewer')
+ps.assign_role('bob', 'editor')
+perms = ps.get_permissions('bob')
+assert 'read' in perms and 'write' in perms
+"""),
+            Probe("revoke", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+ps.create_role('admin')
+ps.grant('admin', 'delete')
+ps.assign_role('alice', 'admin')
+ps.revoke('admin', 'delete')
+assert ps.has_permission('alice', 'delete') is False
+"""),
+            Probe("users_with_perm", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+ps.create_role('admin')
+ps.grant('admin', 'write')
+ps.assign_role('bob', 'admin')
+ps.assign_role('alice', 'admin')
+users = ps.get_users_with_permission('write')
+assert users == ['alice', 'bob']
+"""),
+            Probe("duplicate_role", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+ps.create_role('admin')
+try:
+    ps.create_role('admin')
+    assert False
+except ValueError:
+    pass
+"""),
+            Probe("no_role_user", """\
+from permission_system import PermissionSystem
+ps = PermissionSystem()
+assert ps.has_permission('nobody', 'anything') is False
+assert ps.get_permissions('nobody') == set()
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="sparse_matrix",
+        tier="complex",
+        request=(
+            "Create a SparseMatrix class for efficient storage of matrices with many zeros. "
+            "Constructor takes rows (int) and cols (int). "
+            "Methods: set(row: int, col: int, value: float) sets value (remove if zero). "
+            "get(row: int, col: int) -> float returns value (0.0 if not stored). "
+            "Raise IndexError if row/col out of bounds. "
+            "nnz() -> int returns number of non-zero elements. "
+            "add(other: SparseMatrix) -> SparseMatrix element-wise addition (raise ValueError if dimensions differ). "
+            "multiply(other: SparseMatrix) -> SparseMatrix matrix multiplication (raise ValueError if incompatible). "
+            "transpose() -> SparseMatrix. "
+            "to_dense() -> list[list[float]] returns full 2D list."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("set_get", """\
+from sparse_matrix import SparseMatrix
+m = SparseMatrix(3, 3)
+m.set(0, 0, 5.0)
+m.set(1, 2, 3.0)
+assert m.get(0, 0) == 5.0
+assert m.get(1, 1) == 0.0
+assert m.get(1, 2) == 3.0
+"""),
+            Probe("nnz", """\
+from sparse_matrix import SparseMatrix
+m = SparseMatrix(3, 3)
+m.set(0, 0, 1.0)
+m.set(1, 1, 2.0)
+m.set(2, 2, 3.0)
+assert m.nnz() == 3
+m.set(1, 1, 0.0)  # remove
+assert m.nnz() == 2
+"""),
+            Probe("bounds", """\
+from sparse_matrix import SparseMatrix
+m = SparseMatrix(2, 2)
+try:
+    m.get(5, 0)
+    assert False
+except IndexError:
+    pass
+"""),
+            Probe("add", """\
+from sparse_matrix import SparseMatrix
+a = SparseMatrix(2, 2)
+a.set(0, 0, 1.0); a.set(1, 1, 2.0)
+b = SparseMatrix(2, 2)
+b.set(0, 0, 3.0); b.set(0, 1, 4.0)
+c = a.add(b)
+assert c.get(0, 0) == 4.0
+assert c.get(0, 1) == 4.0
+assert c.get(1, 1) == 2.0
+"""),
+            Probe("transpose", """\
+from sparse_matrix import SparseMatrix
+m = SparseMatrix(2, 3)
+m.set(0, 2, 5.0)
+t = m.transpose()
+assert t.get(2, 0) == 5.0
+assert t.get(0, 2) == 0.0
+"""),
+            Probe("to_dense", """\
+from sparse_matrix import SparseMatrix
+m = SparseMatrix(2, 2)
+m.set(0, 0, 1.0)
+m.set(1, 1, 2.0)
+assert m.to_dense() == [[1.0, 0.0], [0.0, 2.0]]
+"""),
+            Probe("multiply", """\
+from sparse_matrix import SparseMatrix
+a = SparseMatrix(2, 2)
+a.set(0, 0, 1.0); a.set(0, 1, 2.0)
+a.set(1, 0, 3.0); a.set(1, 1, 4.0)
+b = SparseMatrix(2, 1)
+b.set(0, 0, 5.0); b.set(1, 0, 6.0)
+c = a.multiply(b)
+assert c.get(0, 0) == 17.0  # 1*5 + 2*6
+assert c.get(1, 0) == 39.0  # 3*5 + 4*6
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="config_parser",
+        tier="complex",
+        request=(
+            "Create a ConfigParser class for parsing INI-style configuration. "
+            "Methods: parse(text: str) parses config text. "
+            "Sections are [section_name], key-value pairs are key = value. "
+            "Lines starting with # or ; are comments. Empty lines are ignored. "
+            "get(section: str, key: str, default=None) returns value as string, or default. "
+            "get_int(section: str, key: str, default: int = 0) -> int. "
+            "get_bool(section: str, key: str, default: bool = False) -> bool "
+            "(true/yes/1/on are True, false/no/0/off are False, case-insensitive). "
+            "sections() -> list[str] returns sorted section names. "
+            "items(section: str) -> dict[str, str] returns all key-value pairs in section. "
+            "has_section(section: str) -> bool. "
+            "set(section: str, key: str, value: str) sets a value (creates section if needed). "
+            "to_string() -> str serializes back to INI format."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("parse_get", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('[database]\\nhost = localhost\\nport = 5432')
+assert cp.get('database', 'host') == 'localhost'
+assert cp.get('database', 'port') == '5432'
+"""),
+            Probe("get_int", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('[db]\\nport = 3306')
+assert cp.get_int('db', 'port') == 3306
+assert cp.get_int('db', 'timeout', default=30) == 30
+"""),
+            Probe("get_bool", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('[app]\\ndebug = true\\nverbose = no\\nenabled = 1')
+assert cp.get_bool('app', 'debug') is True
+assert cp.get_bool('app', 'verbose') is False
+assert cp.get_bool('app', 'enabled') is True
+"""),
+            Probe("comments_ignored", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('# comment\\n[section]\\n; another comment\\nkey = value')
+assert cp.get('section', 'key') == 'value'
+assert cp.has_section('section')
+"""),
+            Probe("sections", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('[beta]\\nx=1\\n[alpha]\\ny=2')
+assert cp.sections() == ['alpha', 'beta']
+"""),
+            Probe("set_serialize", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.set('new_section', 'key1', 'val1')
+assert cp.get('new_section', 'key1') == 'val1'
+output = cp.to_string()
+assert 'new_section' in output
+assert 'key1' in output
+"""),
+            Probe("items", """\
+from config_parser import ConfigParser
+cp = ConfigParser()
+cp.parse('[db]\\nhost = localhost\\nport = 5432')
+items = cp.items('db')
+assert items == {'host': 'localhost', 'port': '5432'}
+"""),
+        ],
+    ),
+
+    BenchTask(
+        name="task_scheduler",
+        tier="complex",
+        request=(
+            "Create a TaskScheduler class for scheduling tasks with dependencies. "
+            "Methods: add_task(name: str, duration: int, dependencies: list[str] = None) "
+            "adds a task. Raise ValueError if duplicate name. "
+            "get_execution_order() -> list[str] returns topological sort order. "
+            "Raise ValueError if circular dependency detected. "
+            "get_critical_path() -> tuple[list[str], int] returns the longest path of tasks "
+            "and total duration (sum of durations on the path). "
+            "can_run(task_name: str) -> bool returns True if all dependencies are marked complete. "
+            "complete(task_name: str) marks task as complete. Raise KeyError if not found. "
+            "get_ready_tasks() -> list[str] returns sorted list of tasks whose dependencies are all complete "
+            "and that are not yet complete themselves."
+        ),
+        expected_difficulty="complex",
+        probes=[
+            Probe("add_and_order", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('build', 10, ['compile'])
+ts.add_task('compile', 5)
+ts.add_task('test', 3, ['build'])
+order = ts.get_execution_order()
+assert order.index('compile') < order.index('build')
+assert order.index('build') < order.index('test')
+"""),
+            Probe("circular_dep", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('A', 1, ['B'])
+ts.add_task('B', 1, ['A'])
+try:
+    ts.get_execution_order()
+    assert False
+except ValueError:
+    pass
+"""),
+            Probe("critical_path", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('A', 3)
+ts.add_task('B', 5, ['A'])
+ts.add_task('C', 2, ['A'])
+ts.add_task('D', 4, ['B', 'C'])
+path, duration = ts.get_critical_path()
+assert duration == 12  # A(3) -> B(5) -> D(4) = 12
+assert 'A' in path and 'B' in path and 'D' in path
+"""),
+            Probe("ready_tasks", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('A', 1)
+ts.add_task('B', 1)
+ts.add_task('C', 1, ['A'])
+ready = ts.get_ready_tasks()
+assert sorted(ready) == ['A', 'B']
+ts.complete('A')
+ready2 = ts.get_ready_tasks()
+assert sorted(ready2) == ['B', 'C']
+"""),
+            Probe("can_run", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('X', 1)
+ts.add_task('Y', 1, ['X'])
+assert ts.can_run('X') is True
+assert ts.can_run('Y') is False
+ts.complete('X')
+assert ts.can_run('Y') is True
+"""),
+            Probe("duplicate_task", """\
+from task_scheduler import TaskScheduler
+ts = TaskScheduler()
+ts.add_task('A', 1)
+try:
+    ts.add_task('A', 2)
+    assert False
+except ValueError:
+    pass
+"""),
+        ],
+    ),
 ]
 
 
@@ -832,10 +2367,15 @@ def _discover_module_name(workspace: Path, expected_name: str) -> str | None:
     if (src_dir / f"{expected_name}.py").exists():
         return expected_name
     # Fuzzy: find files containing the expected name
+    expected_norm = expected_name.replace("_", "")
     for f in src_dir.glob("*.py"):
         if f.name == "__init__.py":
             continue
+        stem_norm = f.stem.replace("_", "")
         if expected_name in f.stem or f.stem in expected_name:
+            return f.stem
+        # Normalize underscores: lru_cache matches lrucache
+        if expected_norm in stem_norm or stem_norm in expected_norm:
             return f.stem
     # Last resort: if only one non-init .py file exists, use it
     py_files = [f for f in src_dir.glob("*.py") if f.name != "__init__.py"]
@@ -890,7 +2430,7 @@ def run_probes(workspace: Path, probes: list[Probe], python_exe: str) -> list[tu
     return results
 
 
-async def run_task(config: Config, task: BenchTask, python_exe: str) -> TaskResult:
+async def run_task(config: Config, task: BenchTask, python_exe: str, think: bool | None = None) -> TaskResult:
     """Run a single benchmark task through PMCA and validate with probes."""
     workspace = Path(f"./workspace/bench_{task.name}")
     if workspace.exists():
@@ -901,7 +2441,7 @@ async def run_task(config: Config, task: BenchTask, python_exe: str) -> TaskResu
 
     t0 = time.monotonic()
     try:
-        root = await orch.run(task.request)
+        root = await orch.run(task.request, think=think)
         elapsed = time.monotonic() - t0
 
         mm = orch._model_manager
@@ -938,7 +2478,7 @@ async def run_task(config: Config, task: BenchTask, python_exe: str) -> TaskResu
     return result
 
 
-async def run_benchmark(config_path: str, tasks: list[BenchTask]) -> list[TaskResult]:
+async def run_benchmark(config_path: str, tasks: list[BenchTask], think: bool | None = None) -> list[TaskResult]:
     """Run all selected benchmark tasks."""
     config = Config.from_yaml(Path(config_path))
     python_exe = sys.executable
@@ -949,7 +2489,7 @@ async def run_benchmark(config_path: str, tasks: list[BenchTask]) -> list[TaskRe
         print(f"[{i+1}/{len(tasks)}] {task.name} (tier={task.tier})")
         print(f"{'='*70}")
 
-        result = await run_task(config, task, python_exe)
+        result = await run_task(config, task, python_exe, think=think)
         results.append(result)
 
         # Print inline result
@@ -1028,6 +2568,7 @@ def save_results(results: list[TaskResult], path: str) -> None:
                 "tokens": r.prompt_tokens + r.completion_tokens,
                 "elapsed_s": r.elapsed_s,
                 "retries": r.retries,
+                "gate_stats": r.gate_stats,
             }
             for r in results
         ],
@@ -1048,6 +2589,8 @@ def main():
     parser.add_argument("--task", help="Only run a specific task by name")
     parser.add_argument("--output", "-o", default="./benchmark_results.json",
                         help="Save results JSON to this path")
+    parser.add_argument("--think", choices=["true", "false"],
+                        help="Override think mode (true/false) for reasoning models")
     args = parser.parse_args()
 
     setup_logging("INFO", "./benchmark.log")
@@ -1066,7 +2609,13 @@ def main():
     print(f"Config: {args.config}")
     print(f"Tasks:  {len(tasks)} ({', '.join(t.name for t in tasks)})")
 
-    results = asyncio.run(run_benchmark(args.config, tasks))
+    think = None
+    if args.think == "true":
+        think = True
+    elif args.think == "false":
+        think = False
+
+    results = asyncio.run(run_benchmark(args.config, tasks, think=think))
     print_summary(results)
     save_results(results, args.output)
     print(f"\nResults saved to {args.output}")

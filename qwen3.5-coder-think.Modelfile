@@ -1,0 +1,10 @@
+FROM qwen3.5:9b
+
+# Parameters for deep reasoning (architect/reviewer mode)
+PARAMETER num_ctx 32768
+PARAMETER temperature 0.3
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+# Enable thinking mode for the model itself
+# Note: Ollama handles 'think' parameter at generation time, 
+# but we name it distinctively for role-routing.

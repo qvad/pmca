@@ -38,12 +38,15 @@ def _is_openai_provider(provider: str) -> bool:
 class ModelManager:
     """Manages models across Ollama and OpenAI-compatible providers."""
 
-    def __init__(self, config: Config, ollama_host: str = "http://localhost:11434") -> None:
+    def __init__(self, config: Config, ollama_host: str = "") -> None:
         self._config = config
-        self._ollama_host = ollama_host.rstrip("/")
+        # Resolve Ollama host: explicit arg > OLLAMA_HOST env > default
+        self._ollama_host = (
+            ollama_host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        ).rstrip("/")
         self._current_model: str | None = None
         # Ollama client (used for local models)
-        self._ollama_client = httpx.AsyncClient(base_url=self._ollama_host, timeout=600.0)
+        self._ollama_client = httpx.AsyncClient(base_url=self._ollama_host, timeout=1800.0)
         # Separate clients for OpenAI-compatible providers (keyed by base_url)
         self._openai_clients: dict[str, httpx.AsyncClient] = {}
         # Telemetry aggregation
@@ -160,19 +163,22 @@ class ModelManager:
         system: str = "",
         temperature: float | None = None,
         format: dict | None = None,
+        think: bool | None = None,
     ) -> str:
         """Generate completion from the model assigned to this role.
 
         Args:
             format: Optional JSON schema dict for structured output (Ollama only).
                     When provided, the model output is constrained to match the schema.
+            think: Control thinking mode for reasoning models (Ollama only).
+                   True enables chain-of-thought, False disables it, None uses model default.
         """
         model_cfg = self._config.get_model(role)
         await self.ensure_loaded(role)
 
         if _is_openai_provider(model_cfg.provider):
             return await self._generate_openai(model_cfg, prompt, system, temperature)
-        return await self._generate_ollama(model_cfg, role, prompt, system, temperature, format=format)
+        return await self._generate_ollama(model_cfg, role, prompt, system, temperature, format=format, think=think)
 
     async def _generate_ollama(
         self,
@@ -182,22 +188,30 @@ class ModelManager:
         system: str,
         temperature: float | None,
         format: dict | None = None,
+        think: bool | None = None,
     ) -> str:
         """Generate via Ollama's /api/generate endpoint."""
         temp = temperature if temperature is not None else model_cfg.temperature
+        options: dict = {
+            "temperature": temp,
+            "num_ctx": model_cfg.context_window,
+        }
+        if model_cfg.max_tokens is not None:
+            options["num_predict"] = model_cfg.max_tokens
         payload: dict = {
             "model": model_cfg.name,
             "prompt": prompt,
             "stream": False,
-            "options": {
-                "temperature": temp,
-                "num_ctx": model_cfg.context_window,
-            },
+            "options": options,
         }
         if system:
             payload["system"] = system
         if format is not None:
             payload["format"] = format
+        # Model-level think (from config YAML) overrides call-site default
+        effective_think = model_cfg.think if model_cfg.think is not None else think
+        if effective_think is not None:
+            payload["think"] = effective_think
 
         log.debug(f"Generating with {model_cfg.name} (role={role.value})")
 

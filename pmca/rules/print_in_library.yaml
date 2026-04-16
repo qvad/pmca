@@ -1,0 +1,14 @@
+rules:
+  - id: print-in-library
+    pattern: print(...)
+    paths:
+      include:
+        - "src/"
+      exclude:
+        - "tests/"
+        - "**/test_*.py"
+    fix: "pass  # removed print statement"
+    message: >-
+      Avoid `print()` in library code. Use logging or remove the debug output.
+    languages: [python]
+    severity: WARNING

@@ -16,14 +16,16 @@ build/
 # Logs
 *.log
 
-# Workspace (generated benchmark outputs)
+# Workspace (generated code)
 workspace/
 
-# Benchmark artifacts
-benchmark.log
-benchmark_results.json
+# Results (experimental data — not tracked)
+results/
 
 # IDE
 .idea/
 .vscode/
 *.swp
+
+# Obsidian
+Obsidian/
