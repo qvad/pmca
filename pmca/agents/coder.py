@@ -27,11 +27,11 @@ class CoderAgent(BaseAgent):
         """Construct system prompt, injecting language-specific skills."""
         from pmca.utils.lang import detect_language
         lang = detect_language(task)
-        
+
         # VOCAL MANDATE: Make it impossible for the model to ignore the target language
         system = f"YOU ARE A {lang.upper()} EXPERT. YOU MUST WRITE CODE ONLY IN {lang.upper()}.\n\n"
         system += prompts.SYSTEM_PROMPT
-        
+
         if lang == "typescript":
             from pmca.prompts import TYPESCRIPT_SKILLS
             if TYPESCRIPT_SKILLS not in system:

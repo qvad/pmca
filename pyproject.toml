@@ -50,3 +50,34 @@ include = ["pmca*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+exclude = [".venv", "build", "dist", "workspace", "results"]
+
+[tool.ruff.lint]
+select = [
+    "F",    # pyflakes
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by line-length)
+    "B008",   # function calls in argument defaults
+    "UP042",  # StrEnum (keep str/Enum for Python 3.11 compat)
+    "UP035",  # typing.Callable usage (kept for readability in some spots)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]  # test fixtures may appear unused
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = ["build/", "dist/", "\\.venv/", "workspace/"]

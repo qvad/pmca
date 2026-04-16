@@ -30,7 +30,6 @@ from pmca.models.config import Config
 from pmca.orchestrator import Orchestrator
 from pmca.utils.logger import setup_logging
 
-
 # ---------------------------------------------------------------------------
 # Validation probes — deterministic correctness checks run AFTER generation
 # ---------------------------------------------------------------------------

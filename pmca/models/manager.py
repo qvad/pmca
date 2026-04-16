@@ -329,7 +329,7 @@ class ModelManager:
             log.warning(f"Cannot reach Ollama: {e}")
 
         result: dict[str, bool] = {}
-        for role, model_cfg in self._config.models.items():
+        for model_cfg in self._config.models.values():
             if _is_openai_provider(model_cfg.provider):
                 # Cloud models are always "available" if API key is set
                 env_var = _API_KEY_ENV.get(model_cfg.provider, "")
@@ -369,7 +369,7 @@ class ModelManager:
         for model_name, is_available in available.items():
             if not is_available:
                 # Only pull Ollama models, not cloud ones
-                for role, cfg in self._config.models.items():
+                for cfg in self._config.models.values():
                     if cfg.name == model_name and cfg.provider == "ollama":
                         await self.pull_model(model_name)
                         break

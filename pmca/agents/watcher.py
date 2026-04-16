@@ -325,7 +325,7 @@ class WatcherAgent(BaseAgent):
         fixes = 0
 
         # Collect fixes in reverse line order so edits don't shift line numbers
-        edits: list[tuple[int, str, str, str, int]] = []
+        edits: list[tuple[int, str, str, int, int]] = []
         # (line_idx_of_def, param_name, mutable_literal, body_first_line_idx, indent)
 
         for node in ast.walk(tree):
@@ -542,7 +542,7 @@ class WatcherAgent(BaseAgent):
                     )
                     _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
                     err_output = stderr.decode()
-                except (asyncio.TimeoutError, FileNotFoundError):
+                except (TimeoutError, FileNotFoundError):
                     continue
 
                 if proc.returncode == 0:
@@ -1439,7 +1439,7 @@ class WatcherAgent(BaseAgent):
 
         # also exclude common library names mentioned in tech constraints
         _LIB_NAMES = {
-            "pyyaml", "yaml", "json", "httpx", "asyncio", "math", "re", 
+            "pyyaml", "yaml", "json", "httpx", "asyncio", "math", "re",
             "hashlib", "datetime", "os", "sys", "abc", "typing", "collections",
             "dataclasses", "enum", "pytest", "ruff", "mypy", "semgrep",
         }
@@ -1468,7 +1468,7 @@ class WatcherAgent(BaseAgent):
         from pmca.utils.lang import detect_language, get_extension
         lang = detect_language(task)
         ext = get_extension(lang)
-        
+
         defined_names: set[str] = set()
         ws = Path(self._workspace_path)
         scan_files = list(ws.rglob(f"*{ext}"))
@@ -1528,12 +1528,12 @@ class WatcherAgent(BaseAgent):
         test_files = list(task.test_files.keys())
         is_go = any(f.endswith(".go") for f in test_files)
         is_ts = any(f.endswith(".ts") or f.endswith(".js") for f in test_files)
-        
+
         if is_go:
             return await self._run_go_tests(task)
         if is_ts:
             return await self._run_ts_tests(task)
-            
+
         # Default: Python / Pytest
         return await self._run_python_tests(task)
 
@@ -1596,7 +1596,7 @@ class WatcherAgent(BaseAgent):
         py_tests = [f for f in task.test_files if f.endswith(".py")]
         if not py_tests:
             return TestResult(passed=True, total=0, failures=0, output="No Python tests", errors=[])
-            
+
         python_exe = self._find_python()
         try:
             ws_abs = Path(self._workspace_path).resolve()
@@ -2029,7 +2029,7 @@ class WatcherAgent(BaseAgent):
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                 output = stdout.decode() + stderr.decode()
-            except (asyncio.TimeoutError, FileNotFoundError):
+            except (TimeoutError, FileNotFoundError):
                 continue
 
             if proc.returncode == 0:
@@ -2200,7 +2200,7 @@ class WatcherAgent(BaseAgent):
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                 output = stdout.decode() + stderr.decode()
-            except (asyncio.TimeoutError, FileNotFoundError):
+            except (TimeoutError, FileNotFoundError):
                 continue
 
             if proc.returncode == 0:
@@ -2337,7 +2337,7 @@ class WatcherAgent(BaseAgent):
                     )
                     try:
                         await asyncio.wait_for(proc.communicate(), timeout=5)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         # Timeout counts as killed (mutant caused infinite loop)
                         try:
                             proc.kill()

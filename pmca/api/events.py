@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import enum
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import AsyncIterator
 
 
 class EventType(str, enum.Enum):

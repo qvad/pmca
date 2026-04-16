@@ -110,7 +110,7 @@ class Orchestrator:
     def _apply_strategy_profiles(self, workspace_path: Path) -> None:
         """Apply Best Known Configurations (BKC) based on active models."""
         from pmca.models.profiles import get_profile_for_model
-        
+
         # Check coder model as the primary driver of strategy
         coder_cfg = self._config.models.get(AgentRole.CODER)
         if not coder_cfg:
@@ -424,7 +424,7 @@ class Orchestrator:
         """Code and verify a leaf task."""
         difficulty, reasoning_heavy, signals = self._estimate_task_profile(task)
         think_mode = reasoning_heavy or self._think_coder_hint
-        
+
         task = await self.code_phase(task, think=think_mode)
         if task.is_failed:
             return task

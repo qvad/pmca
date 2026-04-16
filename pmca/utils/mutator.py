@@ -6,6 +6,7 @@ import ast
 import copy
 import enum
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -49,7 +50,7 @@ class _MutationSite:
     mutation_type: MutationType
     line: int
     description: str
-    apply: object  # callable: (tree) -> ast.Module
+    apply: Callable[[ast.Module], ast.Module]
 
 
 class _MutationCollector(ast.NodeVisitor):
@@ -201,6 +202,7 @@ def generate_mutations(source: str, max_mutations: int = 8) -> list[Mutation]:
         return []
 
     # Diverse selection: group by type, round-robin pick
+    selected: list[_MutationSite]
     if len(sites) <= max_mutations:
         selected = sites
     else:
@@ -211,7 +213,7 @@ def generate_mutations(source: str, max_mutations: int = 8) -> list[Mutation]:
         for group in by_type.values():
             random.shuffle(group)
 
-        selected: list[_MutationSite] = []
+        selected = []
         type_iters = {t: iter(g) for t, g in by_type.items()}
         types = list(type_iters.keys())
         idx = 0

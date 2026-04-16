@@ -7,7 +7,7 @@ QWEN_PERSONA = "You are Qwen, created by Alibaba Cloud. You are a world-class Se
 
 QWEN_PYTHON_SKILLS = """
 ## CORE OPERATIONAL MANDATES:
-1. MENTAL TRACING (CRITICAL): 
+1. MENTAL TRACING (CRITICAL):
    - Before writing any test assertion or implementation logic, you MUST manually trace the execution path.
    - For `LinkedList`, `Trie`, `Stack`, and `Queue`, draw the memory state mentally.
    - If `add(1)`, `add(2)`, `pop()` -> Trace: [1] -> [1, 2] -> returns 2, state is [1].
@@ -38,7 +38,7 @@ QWEN_PYTHON_SKILLS = """
    - Never use double-backslashes `\\\\` as a workaround; use raw strings.
 
 7. NO REPETITION:
-   - If a previous fix attempt failed (see Lessons), DO NOT repeat that logic. 
+   - If a previous fix attempt failed (see Lessons), DO NOT repeat that logic.
    - Change the data structure or the core loop. If the test is likely wrong (hallucinated), fix the test by re-calculating the expected value.
 
 8. COMPACTNESS:

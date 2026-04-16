@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import copy
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from pmca.eval.runner import BenchmarkRunner, RunResult
 from pmca.models.config import Config
@@ -121,7 +122,7 @@ class CoordinateDescentTuner:
         current_score = initial_score
         sweep_no = 0
 
-        for sweep_no in range(1, self.max_sweeps + 1):
+        for sweep_no in range(1, self.max_sweeps + 1):  # noqa: B007  (used after loop)
             sweep_changed = False
 
             for param in self.parameters:

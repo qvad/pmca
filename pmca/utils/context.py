@@ -146,7 +146,7 @@ class ContextManager:
         """Heuristic-based design pattern retrieval from knowledge base."""
         text = (task.title + (task.spec or "")).lower()
         hints = []
-        
+
         # Simple keyword mapping
         # In a real RAG setup, this would be a vector search.
         # Here we use high-signal heuristics.
@@ -178,7 +178,7 @@ class ContextManager:
             match = pattern.search(content)
             if match:
                 extracted.append(match.group(0).strip())
-            
+
             # 2. Code skeleton (if exists)
             skeleton_name = hint.lower().split(" ")[0]
             # Map specific names to skeleton files
@@ -193,22 +193,22 @@ class ContextManager:
                 if skel_path.exists():
                     skel_code = skel_path.read_text()
                     extracted.append(f"### {hint} Boilerplate Skeleton:\n```python\n{skel_code}\n```")
-        
+
         return "\n\n".join(extracted) if extracted else ""
 
     def _build_verified_code_context(self, task: TaskNode) -> str:
         """Fetch actual source code for verified sibling tasks."""
         parts: list[str] = []
         siblings = self._tree.get_siblings(task.id)
-        
-        # We need a way to read files. Since ContextManager doesn't have 
-        # a FileManager reference, we rely on the TaskNode's cached snippets 
+
+        # We need a way to read files. Since ContextManager doesn't have
+        # a FileManager reference, we rely on the TaskNode's cached snippets
         # or the orchestrator's workspace. For now, let's look at child.code_files.
         for s in siblings:
             if s.status == TaskStatus.VERIFIED and s.code_files:
                 for file_path, content in s.code_files.items():
                     parts.append(f"### File: {file_path}\n```python\n{content}\n```")
-        
+
         return "\n\n".join(parts)
 
     def _build_sibling_text(self, siblings: list[TaskNode]) -> str:
@@ -269,7 +269,7 @@ class ContextManager:
         result_parts: list[str] = []
         chars_used = 0
 
-        for label, content, priority in sections:
+        for label, content, _priority in sections:
             section_text = f"## {label}\n{content}\n"
             section_len = len(section_text)
 

@@ -13,9 +13,8 @@ via `scripts/build_profiles.py`.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict
 
 
 @dataclass
@@ -61,7 +60,7 @@ class StrategyProfile:
 # Model family defaults — used as starting point for models without benchmark data.
 # Keyed by the shortest unique model identifier that fuzzy-matches Ollama tags.
 
-STRATEGY_PROFILES: Dict[str, StrategyProfile] = {
+STRATEGY_PROFILES: dict[str, StrategyProfile] = {
     # ── Qwen 2.5 Coder family ──
     "qwen2.5-coder:7b": StrategyProfile(
         name="qwen2.5-coder:7b",
@@ -235,10 +234,10 @@ def get_profile_for_model(model_name: str) -> StrategyProfile | None:
     return best_match
 
 
-def load_profiles_from_json(path: Path) -> Dict[str, StrategyProfile]:
+def load_profiles_from_json(path: Path) -> dict[str, StrategyProfile]:
     """Load auto-generated profiles from build_profiles.py output."""
     data = json.loads(path.read_text())
-    profiles: Dict[str, StrategyProfile] = {}
+    profiles: dict[str, StrategyProfile] = {}
     for name, pdata in data.items():
         scores = [
             TechniqueScore(**s) for s in pdata.pop("technique_scores", [])
@@ -247,7 +246,7 @@ def load_profiles_from_json(path: Path) -> Dict[str, StrategyProfile]:
     return profiles
 
 
-def save_profiles_to_json(profiles: Dict[str, StrategyProfile], path: Path) -> None:
+def save_profiles_to_json(profiles: dict[str, StrategyProfile], path: Path) -> None:
     """Save profiles to JSON for persistence across runs."""
     data = {}
     for name, profile in profiles.items():

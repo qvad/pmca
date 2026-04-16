@@ -15,9 +15,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from pmca.models.config import Config
 from pmca.orchestrator import Orchestrator
@@ -260,7 +260,7 @@ class BenchmarkRunner:
         # The orchestrator stores code per node; find the one matching task_id
         # by file content (the request was about this task).
         for node in orch.task_tree.walk():
-            for path, content in node.code_files.items():
+            for _path, content in node.code_files.items():
                 if content:
                     return content
         return ""

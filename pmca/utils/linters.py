@@ -55,7 +55,7 @@ async def run_mypy(file_path: Path, workspace: Path) -> list[str]:
             cwd=str(workspace),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.warning(f"mypy timed out on {file_path}")
         return []
     except FileNotFoundError:
@@ -93,7 +93,7 @@ async def run_ruff(file_path: Path, workspace: Path) -> list[str]:
             cwd=str(workspace),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.warning(f"ruff timed out on {file_path}")
         return []
     except FileNotFoundError:
@@ -133,7 +133,7 @@ async def ruff_autofix(file_path: Path, workspace: Path) -> int:
             cwd=str(workspace),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-    except (asyncio.TimeoutError, FileNotFoundError):
+    except (TimeoutError, FileNotFoundError):
         return 0
 
     output = stdout.decode()
@@ -193,7 +193,7 @@ async def semgrep_autofix(file_path: Path, workspace: Path) -> int:
             cwd=str(workspace),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-    except (asyncio.TimeoutError, FileNotFoundError):
+    except (TimeoutError, FileNotFoundError):
         return 0
 
     # Count fixes by comparing file content before and after
@@ -208,7 +208,7 @@ async def semgrep_autofix(file_path: Path, workspace: Path) -> int:
     # Count changed lines as a rough fix count
     before_lines = content_before.splitlines()
     after_lines = content_after.splitlines()
-    changes = sum(1 for a, b in zip(before_lines, after_lines) if a != b)
+    changes = sum(1 for a, b in zip(before_lines, after_lines, strict=False) if a != b)
     changes += abs(len(after_lines) - len(before_lines))
     fixes = max(changes, 1)
 

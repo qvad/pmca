@@ -33,7 +33,7 @@ class BaseAgent(ABC):
             think: Control thinking mode for reasoning models.
         """
         effective_role = role or self.role
-        
+
         # Inject Qwen persona if applicable
         model_cfg = self._model._config.get_model(effective_role)
         if "qwen3.5" in model_cfg.name.lower():
