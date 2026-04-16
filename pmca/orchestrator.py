@@ -6,6 +6,7 @@ import datetime
 import re
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from rich.panel import Panel
@@ -68,6 +69,15 @@ def _missing_names_failure(missing_names: list) -> ReviewResult:
         timestamp=_now(),
         model_used="spec-coverage-gate",
     )
+
+
+@dataclass
+class _TriageContext:
+    """Narrow context for triage diagnose+fix — one failing test."""
+    code_file: str
+    code_function: str
+    test_file_path: str
+    test_function: str
 
 
 class Orchestrator:
@@ -1320,148 +1330,191 @@ class Orchestrator:
         """Investigate each failing test with a focused mini-cascade.
 
         For each failing test:
-        1. Architect diagnoses: is the CODE wrong or the TEST wrong?
-        2. Coder fixes the ONE thing that's wrong (narrow context)
-        3. Watcher re-runs just that test to verify
+          1. Locate code + test function sources (narrow context)
+          2. Architect diagnoses: is the CODE wrong or the TEST wrong?
+          3. Coder fixes the one thing that's wrong
+          4. Watcher re-runs — if all tests pass, exit early
 
-        Returns number of tests fixed.
+        Capped at 3 errors per call to limit LLM spend.
+        Returns number of fixes applied.
         """
-        from pmca.prompts.coder import (
-            TRIAGE_DIAGNOSE_PROMPT,
-            TRIAGE_FIX_CODE_PROMPT,
-            TRIAGE_FIX_TEST_PROMPT,
-        )
-
         if not structured_errors:
             return 0
 
         ws = Path(self._workspace_path)
-        code_files_list = list(task.code_files.keys()) if isinstance(task.code_files, dict) else list(task.code_files)
         fixes_applied = 0
 
-        for error in structured_errors[:3]:  # cap at 3 to limit LLM calls
-            # 1. Locate the code function and test function
-            location = self._watcher._parse_error_location(
-                error, ws, code_files_list,
-            )
-            if not location:
-                continue
-            code_file, func_name = location
-
-            code_path = ws / code_file
-            if not code_path.exists():
-                continue
-            code_source = code_path.read_text()
-
-            # Extract just the relevant code function
-            func_result = self._watcher._extract_function_source(
-                code_source, func_name,
-            )
-            if not func_result:
-                continue
-            code_function, _, _ = func_result
-
-            # Extract the failing test function
-            test_name = error.test_name.split("::")[-1] if "::" in error.test_name else error.test_name
-            test_function = ""
-            test_file_path = ""
-            test_files = task.test_files if isinstance(task.test_files, dict) else {}
-            for tpath, tcontent in test_files.items():
-                tf_result = self._watcher._extract_function_source(tcontent, test_name)
-                if tf_result:
-                    test_function = tf_result[0]
-                    test_file_path = tpath
-                    break
-
-            if not test_function:
+        for error in structured_errors[:3]:
+            ctx = self._build_triage_context(task, error, ws)
+            if ctx is None:
                 continue
 
-            error_text = error.format_for_prompt() if hasattr(error, 'format_for_prompt') else str(error)
-
-            # 2. DIAGNOSE: Architect decides code_wrong vs test_wrong
-            diagnose_prompt = TRIAGE_DIAGNOSE_PROMPT.format(
-                spec=task.spec or "",
-                code_function=code_function,
-                test_function=test_function,
-                error=error_text[:500],
-            )
-            diagnosis_raw = await self._architect._generate(
-                diagnose_prompt,
-                role=AgentRole.ARCHITECT,
-                think=self._think_architect_hint or None,
-            )
-
-            # Parse verdict
-            import json as _json
-            verdict = "code_wrong"  # default to fixing code
-            diagnosis_text = diagnosis_raw
-            try:
-                # Extract JSON from response
-                json_match = re.search(r'\{[^}]+\}', diagnosis_raw, re.DOTALL)
-                if json_match:
-                    parsed = _json.loads(json_match.group())
-                    verdict = parsed.get("verdict", "code_wrong")
-                    reasoning = parsed.get("reasoning", "")
-                    correct_val = parsed.get("correct_value", "")
-                    diagnosis_text = f"{reasoning} Correct value: {correct_val}"
-            except (ValueError, KeyError):
-                pass
-
-            log.info(
-                f"Triage [{error.test_name}]: verdict={verdict} "
-                f"({diagnosis_text[:80]})"
-            )
+            verdict, diagnosis_text = await self._diagnose_triage(task, ctx, error)
             self._gate_stats["triage_investigations"] = (
                 self._gate_stats.get("triage_investigations", 0) + 1
             )
 
-            # 3. FIX: Coder fixes the one thing that's wrong
             if verdict == "test_wrong":
-                fix_prompt = TRIAGE_FIX_TEST_PROMPT.format(
-                    spec=task.spec or "",
-                    code_function=code_function,
-                    test_function=test_function,
-                    diagnosis=diagnosis_text,
-                    filepath=test_file_path,
-                )
-                fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
-                fix_files = self._coder._parse_code_blocks(fix_response)
-
-                for cf in fix_files:
-                    if cf.path in test_files:
-                        # Splice the fixed test function back into the full file
-                        self._file_manager.write_file(cf.path, cf.content)
-                        task.test_files[cf.path] = cf.content
-                        fixes_applied += 1
-                        self._gate_stats["triage_test_fixes"] = (
-                            self._gate_stats.get("triage_test_fixes", 0) + 1
-                        )
+                fixes_applied += await self._apply_triage_test_fix(task, ctx, diagnosis_text)
             else:
-                fix_prompt = TRIAGE_FIX_CODE_PROMPT.format(
-                    spec=task.spec or "",
-                    code_function=code_function,
-                    diagnosis=diagnosis_text,
-                    filepath=code_file,
-                )
-                fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
-                fix_files = self._coder._parse_code_blocks(fix_response)
+                fixes_applied += await self._apply_triage_code_fix(task, ctx, diagnosis_text)
 
-                for cf in fix_files:
-                    self._file_manager.write_file(cf.path, cf.content)
-                    if isinstance(task.code_files, dict):
-                        task.code_files[cf.path] = cf.content
-                    fixes_applied += 1
-                    self._gate_stats["triage_code_fixes"] = (
-                        self._gate_stats.get("triage_code_fixes", 0) + 1
-                    )
-
-            # 4. VERIFY: Re-run tests to see if this fixed it
             retest = await self._watcher.run_tests(task)
             if retest.passed:
                 log.info(f"Triage resolved all failures after fixing {error.test_name}")
                 return fixes_applied
 
         return fixes_applied
+
+    def _build_triage_context(
+        self, task: TaskNode, error, ws: Path,
+    ) -> _TriageContext | None:
+        """Locate code + test function sources for one failing test.
+
+        Returns None if the file/function can't be pinned down, signalling
+        the caller to skip this error.
+        """
+        code_files_list = (
+            list(task.code_files.keys())
+            if isinstance(task.code_files, dict)
+            else list(task.code_files)
+        )
+        location = self._watcher._parse_error_location(error, ws, code_files_list)
+        if not location:
+            return None
+        code_file, func_name = location
+
+        code_path = ws / code_file
+        if not code_path.exists():
+            return None
+
+        func_result = self._watcher._extract_function_source(code_path.read_text(), func_name)
+        if not func_result:
+            return None
+        code_function = func_result[0]
+
+        test_function, test_file_path = self._find_failing_test_function(task, error)
+        if not test_function:
+            return None
+
+        return _TriageContext(
+            code_file=code_file,
+            code_function=code_function,
+            test_file_path=test_file_path,
+            test_function=test_function,
+        )
+
+    def _find_failing_test_function(
+        self, task: TaskNode, error,
+    ) -> tuple[str, str]:
+        """Find the source of the failing test function in task.test_files."""
+        test_name = (
+            error.test_name.split("::")[-1] if "::" in error.test_name else error.test_name
+        )
+        test_files = task.test_files if isinstance(task.test_files, dict) else {}
+        for tpath, tcontent in test_files.items():
+            tf_result = self._watcher._extract_function_source(tcontent, test_name)
+            if tf_result:
+                return tf_result[0], tpath
+        return "", ""
+
+    async def _diagnose_triage(
+        self, task: TaskNode, ctx: _TriageContext, error,
+    ) -> tuple[str, str]:
+        """Ask architect whether code or test is wrong. Returns (verdict, diagnosis_text)."""
+        from pmca.prompts.coder import TRIAGE_DIAGNOSE_PROMPT
+
+        error_text = (
+            error.format_for_prompt() if hasattr(error, "format_for_prompt") else str(error)
+        )
+        diagnose_prompt = TRIAGE_DIAGNOSE_PROMPT.format(
+            spec=task.spec or "",
+            code_function=ctx.code_function,
+            test_function=ctx.test_function,
+            error=error_text[:500],
+        )
+        diagnosis_raw = await self._architect._generate(
+            diagnose_prompt,
+            role=AgentRole.ARCHITECT,
+            think=self._think_architect_hint or None,
+        )
+        verdict, diagnosis_text = self._parse_diagnosis(diagnosis_raw)
+        log.info(f"Triage [{error.test_name}]: verdict={verdict} ({diagnosis_text[:80]})")
+        return verdict, diagnosis_text
+
+    @staticmethod
+    def _parse_diagnosis(raw: str) -> tuple[str, str]:
+        """Extract verdict + human-readable diagnosis from architect JSON output.
+
+        Defaults to ('code_wrong', raw) when JSON cannot be parsed.
+        """
+        import json as _json
+        try:
+            json_match = re.search(r"\{[^}]+\}", raw, re.DOTALL)
+            if not json_match:
+                return "code_wrong", raw
+            parsed = _json.loads(json_match.group())
+            verdict = parsed.get("verdict", "code_wrong")
+            reasoning = parsed.get("reasoning", "")
+            correct_val = parsed.get("correct_value", "")
+            return verdict, f"{reasoning} Correct value: {correct_val}"
+        except (ValueError, KeyError):
+            return "code_wrong", raw
+
+    async def _apply_triage_test_fix(
+        self, task: TaskNode, ctx: _TriageContext, diagnosis_text: str,
+    ) -> int:
+        """Let coder rewrite the failing test. Returns number of files updated."""
+        from pmca.prompts.coder import TRIAGE_FIX_TEST_PROMPT
+
+        fix_prompt = TRIAGE_FIX_TEST_PROMPT.format(
+            spec=task.spec or "",
+            code_function=ctx.code_function,
+            test_function=ctx.test_function,
+            diagnosis=diagnosis_text,
+            filepath=ctx.test_file_path,
+        )
+        fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
+        fix_files = self._coder._parse_code_blocks(fix_response)
+        test_files = task.test_files if isinstance(task.test_files, dict) else {}
+
+        fixes = 0
+        for cf in fix_files:
+            if cf.path not in test_files:
+                continue
+            self._file_manager.write_file(cf.path, cf.content)
+            task.test_files[cf.path] = cf.content
+            fixes += 1
+            self._gate_stats["triage_test_fixes"] = (
+                self._gate_stats.get("triage_test_fixes", 0) + 1
+            )
+        return fixes
+
+    async def _apply_triage_code_fix(
+        self, task: TaskNode, ctx: _TriageContext, diagnosis_text: str,
+    ) -> int:
+        """Let coder rewrite the faulty code function. Returns number of files updated."""
+        from pmca.prompts.coder import TRIAGE_FIX_CODE_PROMPT
+
+        fix_prompt = TRIAGE_FIX_CODE_PROMPT.format(
+            spec=task.spec or "",
+            code_function=ctx.code_function,
+            diagnosis=diagnosis_text,
+            filepath=ctx.code_file,
+        )
+        fix_response = await self._coder._generate(fix_prompt, role=AgentRole.CODER)
+        fix_files = self._coder._parse_code_blocks(fix_response)
+
+        fixes = 0
+        for cf in fix_files:
+            self._file_manager.write_file(cf.path, cf.content)
+            if isinstance(task.code_files, dict):
+                task.code_files[cf.path] = cf.content
+            fixes += 1
+            self._gate_stats["triage_code_fixes"] = (
+                self._gate_stats.get("triage_code_fixes", 0) + 1
+            )
+        return fixes
 
     async def integrate_phase(self, task: TaskNode) -> TaskNode:
         """Verify all children work together after they complete.
