@@ -2250,15 +2250,11 @@ class WatcherAgent(BaseAgent):
         return test_content, fixes
 
     async def oracle_repair_tests(self, task: TaskNode) -> int:
-        """Second-pass oracle: trust non-trivial actual values for remaining assertion failures.
+        """Second-pass oracle: trust non-trivial actual values for remaining failures.
 
-        After ``calibrate_tests`` applies conservative heuristics (25% threshold,
-        power-of-10), this method aggressively trusts non-trivial actual values
-        as oracles for any remaining assertion mismatches.
-
-        Guard rails — skip oracle repair when:
-        - Numeric actual value is 0 (likely code bug returning nothing)
-        - String actual value is empty/whitespace (code returns empty)
+        After ``calibrate_tests`` applies conservative heuristics, this pass
+        aggressively trusts actuals as oracles for any remaining assertion
+        mismatches — except when the actual is 0 or empty (likely code bug).
 
         Returns the number of assertions oracle-repaired.
         """
@@ -2271,104 +2267,81 @@ class WatcherAgent(BaseAgent):
 
         python_exe = self._find_python()
         repaired = 0
-
         for test_file in py_tests:
             test_path = Path(self._workspace_path) / test_file
             if not test_path.exists():
                 continue
-
-            # Run pytest to get remaining failures
-            try:
-                ws_abs = Path(self._workspace_path).resolve()
-                proc = await asyncio.create_subprocess_exec(
-                    python_exe, "-m", "pytest", test_file,
-                    "-v", "--tb=long", "--no-header",
-                    f"--rootdir={ws_abs}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=str(ws_abs),
-                    env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
-                )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                output = stdout.decode() + stderr.decode()
-            except (TimeoutError, FileNotFoundError):
+            # Reuse pytest runner from calibrate; same CLI flags suffice.
+            output = await self._run_pytest_for_calibration(test_file, python_exe)
+            if output is None:
                 continue
-
-            if proc.returncode == 0:
-                continue  # All tests pass
-
-            test_content = test_path.read_text()
-            original_content = test_content
-
-            # --- Numeric oracle ---
-            for match in re.finditer(
-                r"assert\s+([\d.]+(?:e[+-]?\d+)?)\s*==\s*([\d.]+(?:e[+-]?\d+)?)",
-                output,
-            ):
-                actual_str = match.group(1)
-                expected_str = match.group(2)
-                if actual_str == expected_str:
-                    continue
-                try:
-                    actual_val = float(actual_str)
-                except ValueError:
-                    continue
-                # Guard: skip if actual is 0 (likely code bug)
-                if actual_val == 0:
-                    self._log.debug(
-                        f"Oracle skip: actual is 0 for expected {expected_str}"
-                    )
-                    continue
-                old = f"== {expected_str}"
-                if old in test_content:
-                    test_content = test_content.replace(old, f"== {actual_str}", 1)
-                    repaired += 1
-                    self._log.info(
-                        f"Oracle-repaired numeric: {expected_str} → {actual_str}"
-                    )
-
-            # --- String oracle (single quotes) ---
-            for match in re.finditer(
-                r"assert\s+'([^']+)'\s*==\s*'([^']+)'",
-                output,
-            ):
-                actual_s = match.group(1)
-                expected_s = match.group(2)
-                if actual_s == expected_s:
-                    continue
-                if not actual_s.strip():
-                    continue
-                old = f"== '{expected_s}'"
-                if old in test_content:
-                    test_content = test_content.replace(old, f"== '{actual_s}'", 1)
-                    repaired += 1
-                    self._log.info(
-                        f"Oracle-repaired string: '{expected_s}' → '{actual_s}'"
-                    )
-
-            # --- String oracle (double quotes) ---
-            for match in re.finditer(
-                r'assert\s+"([^"]+)"\s*==\s*"([^"]+)"',
-                output,
-            ):
-                actual_s = match.group(1)
-                expected_s = match.group(2)
-                if actual_s == expected_s:
-                    continue
-                if not actual_s.strip():
-                    continue
-                old = f'== "{expected_s}"'
-                if old in test_content:
-                    test_content = test_content.replace(old, f'== "{actual_s}"', 1)
-                    repaired += 1
-                    self._log.info(
-                        f'Oracle-repaired string: "{expected_s}" → "{actual_s}"'
-                    )
-
-            if test_content != original_content:
-                test_path.write_text(test_content)
-
+            repaired += self._oracle_repair_one_file(test_path, output)
         return repaired
+
+    def _oracle_repair_one_file(self, test_path: Path, output: str) -> int:
+        """Apply numeric + single/double-quoted string oracle repairs to one file."""
+        test_content = test_path.read_text()
+        original = test_content
+
+        numeric, test_content = self._oracle_numeric(output, test_content)
+        s_single, test_content = self._oracle_string(output, test_content, quote="'")
+        s_double, test_content = self._oracle_string(output, test_content, quote='"')
+
+        if test_content != original:
+            test_path.write_text(test_content)
+        return numeric + s_single + s_double
+
+    def _oracle_numeric(self, output: str, test_content: str) -> tuple[int, str]:
+        """Rewrite numeric ``assert X == Y`` to use actual value, skipping zero actuals."""
+        fixes = 0
+        for match in re.finditer(
+            r"assert\s+([\d.]+(?:e[+-]?\d+)?)\s*==\s*([\d.]+(?:e[+-]?\d+)?)",
+            output,
+        ):
+            actual_str, expected_str = match.group(1), match.group(2)
+            if actual_str == expected_str:
+                continue
+            try:
+                actual_val = float(actual_str)
+            except ValueError:
+                continue
+            if actual_val == 0:
+                self._log.debug(
+                    f"Oracle skip: actual is 0 for expected {expected_str}"
+                )
+                continue
+            old = f"== {expected_str}"
+            if old in test_content:
+                test_content = test_content.replace(old, f"== {actual_str}", 1)
+                fixes += 1
+                self._log.info(
+                    f"Oracle-repaired numeric: {expected_str} → {actual_str}"
+                )
+        return fixes, test_content
+
+    def _oracle_string(
+        self, output: str, test_content: str, quote: str,
+    ) -> tuple[int, str]:
+        """Rewrite ``assert 'X' == 'Y'`` (or ``"X" == "Y"``) to use actual, skipping blanks."""
+        # Escape the quote for use inside regex character class.
+        q = re.escape(quote)
+        pattern = rf"assert\s+{q}([^{q}]+){q}\s*==\s*{q}([^{q}]+){q}"
+        fixes = 0
+        for match in re.finditer(pattern, output):
+            actual_s, expected_s = match.group(1), match.group(2)
+            if actual_s == expected_s or not actual_s.strip():
+                continue
+            old = f"== {quote}{expected_s}{quote}"
+            if old in test_content:
+                test_content = test_content.replace(
+                    old, f"== {quote}{actual_s}{quote}", 1,
+                )
+                fixes += 1
+                self._log.info(
+                    f"Oracle-repaired string: {quote}{expected_s}{quote} → "
+                    f"{quote}{actual_s}{quote}"
+                )
+        return fixes, test_content
 
     async def mutation_oracle(
         self, task: TaskNode,
