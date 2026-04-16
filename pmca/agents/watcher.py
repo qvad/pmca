@@ -78,6 +78,14 @@ _API_CHECK_IGNORED_MODULES: frozenset[str] = frozenset({
     "httpx", "os", "sys", "json", "re", "math", "asyncio", "yaml",
 })
 
+# Error types worth attempting a single-function LLM micro-fix for.
+# Narrower than the list of errors we surface — these are the ones with a
+# reasonable chance of being fixable in isolation by a one-shot rewrite.
+_MICRO_FIX_ERROR_TYPES: frozenset[str] = frozenset({
+    "TypeError", "KeyError", "AttributeError", "IndexError",
+    "ValueError", "ZeroDivisionError", "AssertionError",
+})
+
 # Common imports that LLMs forget — maps name → import statement
 _KNOWN_IMPORTS: dict[str, str] = {
     # typing
@@ -1946,114 +1954,119 @@ class WatcherAgent(BaseAgent):
     ) -> int:
         """Attempt surgical LLM fix for single-function errors.
 
-        For each error with a clear traceback pointing to a specific function,
-        extracts just that function, sends a minimal prompt to the LLM,
-        and splices the fix back.  Returns the number of functions fixed.
+        For each fixable error, extract the failing function, ask the LLM for a
+        minimal replacement, and splice it back. Runs BEFORE coder.fix() as a
+        cheap pre-pass. Capped at 3 micro-fixes per call.
 
-        This runs BEFORE the full coder.fix() as a cheap pre-pass.
+        Returns the number of functions fixed.
         """
         if not self._workspace_path or not task.code_files:
             return 0
 
-        workspace = Path(self._workspace_path)
-
-        # Filter to fixable error types in code (not test) files
-        fixable_types = {"TypeError", "KeyError", "AttributeError", "IndexError",
-                         "ValueError", "ZeroDivisionError", "AssertionError"}
         candidates = [
-            e for e in structured_errors
-            if e.error_type in fixable_types
+            e for e in structured_errors if e.error_type in _MICRO_FIX_ERROR_TYPES
         ]
         if not candidates:
             return 0
 
-        # Only non-test code files
+        workspace = Path(self._workspace_path)
         code_files = [f for f in task.code_files if not f.startswith("test")]
 
         fixed_count = 0
-        seen_functions: set[tuple[str, str]] = set()  # (file, func) already fixed
+        seen: set[tuple[str, str]] = set()
+        for error in candidates[:3]:
+            if await self._apply_micro_fix(task, error, workspace, code_files, seen):
+                fixed_count += 1
+        return fixed_count
 
-        for error in candidates[:3]:  # Cap at 3 micro-fixes
-            loc = self._parse_error_location(error, workspace, code_files)
-            if loc is None:
-                continue
+    async def _apply_micro_fix(
+        self,
+        task: TaskNode,
+        error: TestError,
+        workspace: Path,
+        code_files: list[str],
+        seen: set[tuple[str, str]],
+    ) -> bool:
+        """Try to micro-fix one failing function. Returns True on success."""
+        loc = self._parse_error_location(error, workspace, code_files)
+        if loc is None:
+            return False
+        file_path, func_name = loc
+        if (file_path, func_name) in seen:
+            return False
+        seen.add((file_path, func_name))
 
-            file_path, func_name = loc
-            if (file_path, func_name) in seen_functions:
-                continue
-            seen_functions.add((file_path, func_name))
+        abs_path = workspace / file_path
+        if not abs_path.exists():
+            return False
+        try:
+            source = abs_path.read_text()
+        except OSError:
+            return False
 
-            abs_path = workspace / file_path
-            if not abs_path.exists():
-                continue
+        result = self._extract_function_source(source, func_name)
+        if result is None:
+            return False
+        func_body, start_line, end_line = result
 
-            try:
-                source = abs_path.read_text()
-            except OSError:
-                continue
+        prompt = self._build_micro_fix_prompt(task, error, file_path, func_body)
+        try:
+            response = await self._generate(
+                prompt, system=prompts.MICRO_FIX_SYSTEM, temperature=0.1,
+            )
+            fixed_func = self._extract_code_from_response(response)
+            if not fixed_func or fixed_func.strip() == func_body.strip():
+                return False
 
-            result = self._extract_function_source(source, func_name)
-            if result is None:
-                continue
+            new_source = self._splice_function(source, fixed_func, start_line, end_line)
+            ast.parse(new_source)  # must parse
+            abs_path.write_text(new_source)
+            self._log.info(
+                f"Micro-fixed {func_name} in {file_path} (error: {error.error_type})"
+            )
+            return True
+        except Exception:
+            self._log.debug(f"Micro-fix failed for {func_name}")
+            return False
 
-            func_body, start_line, end_line = result
-
-            # Build source context from error
-            source_ctx = ""
-            if error.source_line:
-                source_ctx = f"Failing line: {error.source_line}"
-            if error.actual_value is not None and error.expected_value is not None:
-                source_ctx += f"\nActual: {error.actual_value}, Expected: {error.expected_value}"
-
-            error_detail = ""
-            if error.traceback:
-                # Extract just the last line of the traceback (the actual error message)
-                tb_lines = error.traceback.strip().splitlines()
-                error_detail = tb_lines[-1] if tb_lines else ""
-            elif error.source_line:
-                error_detail = error.source_line
-
-            prompt = prompts.MICRO_FIX_PROMPT.format(
-                test_name=error.test_name,
-                error_type=error.error_type,
-                error_detail=error_detail,
-                source_context=source_ctx,
-                file_path=file_path,
-                function_body=func_body,
-                spec=task.spec[:1000] if task.spec else "(no spec)",
+    @staticmethod
+    def _build_micro_fix_prompt(
+        task: TaskNode, error: TestError, file_path: str, func_body: str,
+    ) -> str:
+        """Render the MICRO_FIX_PROMPT with details from this specific failure."""
+        source_ctx = ""
+        if error.source_line:
+            source_ctx = f"Failing line: {error.source_line}"
+        if error.actual_value is not None and error.expected_value is not None:
+            source_ctx += (
+                f"\nActual: {error.actual_value}, Expected: {error.expected_value}"
             )
 
-            try:
-                response = await self._generate(
-                    prompt,
-                    system=prompts.MICRO_FIX_SYSTEM,
-                    temperature=0.1,
-                )
+        error_detail = ""
+        if error.traceback:
+            tb_lines = error.traceback.strip().splitlines()
+            error_detail = tb_lines[-1] if tb_lines else ""
+        elif error.source_line:
+            error_detail = error.source_line
 
-                # Parse the fixed function from the response
-                fixed_func = self._extract_code_from_response(response)
-                if not fixed_func or fixed_func.strip() == func_body.strip():
-                    continue
+        return prompts.MICRO_FIX_PROMPT.format(
+            test_name=error.test_name,
+            error_type=error.error_type,
+            error_detail=error_detail,
+            source_context=source_ctx,
+            file_path=file_path,
+            function_body=func_body,
+            spec=task.spec[:1000] if task.spec else "(no spec)",
+        )
 
-                # Splice the fixed function back into the source
-                lines = source.splitlines()
-                fixed_lines = fixed_func.splitlines()
-                lines[start_line:end_line] = fixed_lines
-
-                new_source = "\n".join(lines)
-                # Verify it parses
-                ast.parse(new_source)
-                abs_path.write_text(new_source)
-                fixed_count += 1
-                self._log.info(
-                    f"Micro-fixed {func_name} in {file_path} "
-                    f"(error: {error.error_type})"
-                )
-            except Exception:
-                self._log.debug(f"Micro-fix failed for {func_name}")
-                continue
-
-        return fixed_count
+    @staticmethod
+    def _splice_function(
+        source: str, fixed_func: str, start_line: int, end_line: int,
+    ) -> str:
+        """Replace ``source[start_line:end_line]`` with ``fixed_func`` lines."""
+        lines = source.splitlines()
+        lines[start_line:end_line] = fixed_func.splitlines()
+        return "\n".join(lines)
 
     @staticmethod
     def _extract_code_from_response(response: str) -> str | None:
