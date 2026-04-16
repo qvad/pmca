@@ -30,8 +30,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -470,7 +470,7 @@ async def run_profile(model: str, n_tasks: int | None = None) -> dict:
         symbol = "ON " if enabled else "OFF"
         print(f"  [{symbol}] {repair}")
 
-    print(f"\nTop error patterns:")
+    print("\nTop error patterns:")
     for subcat, count in Counter(e.subcategory for e in all_errors).most_common(5):
         fixable = sum(1 for e in all_errors if e.subcategory == subcat and e.fixable)
         print(f"  {subcat:<30} {count:>4} ({fixable} fixable)")

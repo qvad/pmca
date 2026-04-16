@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 import json
 import re
-import textwrap
 
 from pmca.agents.base import BaseAgent
 from pmca.models.config import AgentRole

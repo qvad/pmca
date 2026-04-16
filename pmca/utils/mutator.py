@@ -71,7 +71,7 @@ class _MutationCollector(ast.NodeVisitor):
                     if (isinstance(n, ast.BinOp)
                             and n.lineno == _node.lineno
                             and n.col_offset == _node.col_offset
-                            and type(n.op) == type(_node.op)):
+                            and type(n.op) is type(_node.op)):
                         n.op = _new()
                         break
                 return t
@@ -100,7 +100,7 @@ class _MutationCollector(ast.NodeVisitor):
                         if (isinstance(n, ast.Compare)
                                 and n.lineno == _line
                                 and n.col_offset == _col):
-                            if _idx < len(n.ops) and type(n.ops[_idx]) == _old:
+                            if _idx < len(n.ops) and type(n.ops[_idx]) is _old:
                                 n.ops[_idx] = _new()
                             break
                     return t

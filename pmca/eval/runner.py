@@ -9,7 +9,6 @@ beyond the optional results file. The tuner uses this as a black box.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import subprocess
@@ -220,7 +219,7 @@ class BenchmarkRunner:
 
             try:
                 orch = Orchestrator(self.config, workspace)
-                root = await orch.run(task["request"])
+                await orch.run(task["request"])
                 code = self._extract_code_for_task(orch, task_id)
             except Exception as exc:
                 return TaskResult(

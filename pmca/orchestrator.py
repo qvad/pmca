@@ -20,7 +20,7 @@ from pmca.models.config import AgentRole, Config
 from pmca.models.manager import ModelManager
 from pmca.tasks.state import LessonRecord, ReviewResult, TaskStatus, TaskType
 from pmca.tasks.tree import TaskNode, TaskTree
-from pmca.utils.assembler import FileAssembler, parse_target_file
+from pmca.utils.assembler import FileAssembler
 from pmca.utils.context import ContextManager
 from pmca.utils.logger import get_console, get_logger
 from pmca.workspace.file_manager import FileManager
@@ -547,7 +547,7 @@ class Orchestrator:
             if iface:
                 interfaces.append(f"# {path}\n{iface}")
         if interfaces:
-            task.spec += f"\n[INTERFACE]\n" + "\n".join(interfaces)
+            task.spec += "\n[INTERFACE]\n" + "\n".join(interfaces)
             log.info(f"Attached interface to '{task.title}'")
 
     @staticmethod
@@ -671,7 +671,7 @@ class Orchestrator:
                     issue_feedback = "\n".join(f"- {i}" for i in test_review.issues)
                     context = (
                         context
-                        + f"\n\n## Test Review Feedback (fix these issues)\n"
+                        + "\n\n## Test Review Feedback (fix these issues)\n"
                         + issue_feedback
                     )
                     if self._tester is not None:
@@ -1109,7 +1109,7 @@ class Orchestrator:
                         task,
                         code_content,
                         "\n".join(review.issues),
-                        lessons_str="\n".join(l.summary for l in lesson_records),
+                        lessons_str="\n".join(lr.summary for lr in lesson_records),
                         memory_str=fm_context,
                         retry_num=attempt + 1,
                         coder_role=fix_role,
@@ -1434,7 +1434,6 @@ class Orchestrator:
             log.info(f"Integration complete for '{task.title}'")
         else:
             # Single-file mode: use LLM integration review
-            integration_context = self._context_manager.build_integration_context(task)
             children_summary = "\n\n".join(
                 f"### {c.title}\nStatus: {c.status.value}\nSpec: {c.spec[:500]}\n"
                 f"Files: {', '.join(c.code_files)}"

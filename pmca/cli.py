@@ -65,7 +65,7 @@ def run(ctx: click.Context, request: tuple[str, ...], workspace: str | None) -> 
     ))
 
     orchestrator = Orchestrator(config, ws_path)
-    result = asyncio.run(orchestrator.run(user_request))
+    asyncio.run(orchestrator.run(user_request))
 
     console.print()
     orchestrator.print_tree()
@@ -131,7 +131,7 @@ def resume(ctx: click.Context, workspace: str | None) -> None:
         title="Resume",
     ))
 
-    result = asyncio.run(orchestrator.cascade(root))
+    asyncio.run(orchestrator.cascade(root))
     orchestrator.print_tree()
 
 

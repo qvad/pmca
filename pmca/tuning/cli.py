@@ -15,7 +15,7 @@ from pathlib import Path
 
 from pmca.eval.runner import BenchmarkRunner
 from pmca.models.config import AgentRole, CascadeConfig, Config, ModelConfig
-from pmca.tuning.parameters import PARAMETERS, Parameter, snapshot
+from pmca.tuning.parameters import PARAMETERS
 from pmca.tuning.tuner import CoordinateDescentTuner, TuningStep
 
 
@@ -28,11 +28,6 @@ def _print_step(step: TuningStep) -> None:
 
 def _build_default_config(model: str) -> Config:
     """Build a baseline Config that uses the same model for every role."""
-    base_model = ModelConfig(
-        name=model,
-        context_window=16384,
-        temperature=0.2,
-    )
     return Config(
         models={
             AgentRole.ARCHITECT: ModelConfig(name=model, temperature=0.3),
@@ -87,11 +82,11 @@ async def cmd_tune(args) -> None:
         progress_callback=_print_step,
     )
 
-    print(f"Initial baseline run...")
+    print("Initial baseline run...")
     result = await tuner.tune()
 
     print(f"\n{'='*60}")
-    print(f"  RESULT")
+    print("  RESULT")
     print(f"{'='*60}")
     print(f"  Initial: {result.initial_score:.0%}")
     print(f"  Final:   {result.final_score:.0%}")
@@ -99,7 +94,7 @@ async def cmd_tune(args) -> None:
     print(f"  Sweeps:  {result.sweeps_completed}")
     print(f"  Runs:    {result.total_runs}")
     print(f"  Time:    {result.elapsed_s:.0f}s")
-    print(f"\n  Best parameters:")
+    print("\n  Best parameters:")
     for name, value in result.final_snapshot.items():
         if result.initial_snapshot.get(name) != value:
             print(f"    {name:<25} = {value}  (was {result.initial_snapshot.get(name)})")

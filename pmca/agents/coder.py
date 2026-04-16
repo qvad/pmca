@@ -167,8 +167,6 @@ class CoderAgent(BaseAgent):
             stacklevel=2,
         )
         suggested_path, suggested_test_path = self._suggested_paths(task)
-        from pathlib import Path
-        suggested_module = Path(suggested_path).stem
         prompt = prompts.GENERATE_TESTS_PROMPT.format(
             spec=task.spec,
             context=context,

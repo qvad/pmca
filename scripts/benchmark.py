@@ -2517,7 +2517,7 @@ def print_summary(results: list[TaskResult]) -> None:
     total_time = sum(r.elapsed_s for r in results)
 
     print(f"\n{'='*70}")
-    print(f"BENCHMARK SUMMARY")
+    print("BENCHMARK SUMMARY")
     print(f"{'='*70}")
     print(f"PMCA tasks:    {pmca_passed}/{total} passed")
     print(f"Probes:        {passed_probes}/{all_probes} passed ({passed_probes/max(all_probes,1)*100:.0f}%)")

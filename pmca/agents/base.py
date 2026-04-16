@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
 
 from pmca.models.config import AgentRole
 from pmca.models.manager import ModelManager

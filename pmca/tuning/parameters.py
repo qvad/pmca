@@ -10,7 +10,7 @@ be a deliberate choice — every parameter doubles search cost.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from pmca.models.config import AgentRole, Config

@@ -198,9 +198,10 @@ def run_ruff(code: str) -> tuple[int, list[str]]:
             [sys.executable, "-m", "ruff", "check", path, "--output-format=concise"],
             capture_output=True, text=True, timeout=10,
         )
-        lines = [l.strip() for l in result.stdout.strip().splitlines() if l.strip() and "Found" not in l]
+        lines = [line.strip() for line in result.stdout.strip().splitlines()
+                 if line.strip() and "Found" not in line]
         # Strip the temp path from each line
-        cleaned = [re.sub(r"^.*\.py:", "", l) for l in lines]
+        cleaned = [re.sub(r"^.*\.py:", "", line) for line in lines]
         return len(cleaned), cleaned[:10]
     except Exception:
         return 0, []
@@ -218,9 +219,9 @@ def run_mypy(code: str) -> tuple[int, list[str]]:
             [sys.executable, "-m", "mypy", path, "--ignore-missing-imports", "--no-error-summary"],
             capture_output=True, text=True, timeout=30,
         )
-        lines = [l.strip() for l in result.stdout.strip().splitlines()
-                 if l.strip() and "error:" in l]
-        cleaned = [re.sub(r"^.*\.py:", "", l) for l in lines]
+        lines = [line.strip() for line in result.stdout.strip().splitlines()
+                 if line.strip() and "error:" in line]
+        cleaned = [re.sub(r"^.*\.py:", "", line) for line in lines]
         return len(cleaned), cleaned[:10]
     except Exception:
         return 0, []
@@ -338,7 +339,7 @@ def print_report(scores: list[QualityScore]) -> None:
             print()
 
         # Spec failures
-        print(f"\n  Spec failures:")
+        print("\n  Spec failures:")
         for s in task_scores:
             if s.spec_failures:
                 print(f"    {s.model.split(':')[0][:15]}: {', '.join(s.spec_failures)}")
@@ -347,7 +348,7 @@ def print_report(scores: list[QualityScore]) -> None:
 
         # Ruff details
         if any(s.ruff_issues > 0 for s in task_scores):
-            print(f"\n  Top ruff issues:")
+            print("\n  Top ruff issues:")
             for s in task_scores:
                 if s.ruff_details:
                     print(f"    {s.model.split(':')[0][:15]}:")
@@ -356,7 +357,7 @@ def print_report(scores: list[QualityScore]) -> None:
 
     # Summary
     print(f"\n{'#' * 70}")
-    print(f"  SUMMARY")
+    print("  SUMMARY")
     print(f"{'#' * 70}")
 
     for s in scores:
@@ -411,7 +412,7 @@ async def main():
     Path("results/current").mkdir(parents=True, exist_ok=True)
     with open("results/current/quality_report.json", "w") as f:
         json.dump(output, f, indent=2)
-    print(f"\nSaved to results/current/quality_report.json")
+    print("\nSaved to results/current/quality_report.json")
 
 
 if __name__ == "__main__":

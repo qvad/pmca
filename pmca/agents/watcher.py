@@ -7,16 +7,15 @@ import asyncio
 import json
 import os
 import re
-import shutil
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from pmca.agents.base import BaseAgent
 from pmca.models.config import AgentRole, CascadeConfig, LintConfig
 from pmca.prompts import watcher as prompts
-from pmca.tasks.state import ReviewResult, TestResult
+from pmca.tasks.state import LessonRecord, ReviewResult, TestResult
 from pmca.tasks.tree import TaskNode
 
 
@@ -199,7 +198,6 @@ class WatcherAgent(BaseAgent):
         """
         # Strategy 1: parse traceback for file:line references
         tb = error.traceback or ""
-        source_line = error.source_line or ""
 
         # Look for file references in traceback
         for code_file in code_files:
@@ -292,14 +290,14 @@ class WatcherAgent(BaseAgent):
                     rf"^(from\s+)\w+\.({re.escape(mod)})\s+(import\s+.+)$",
                     re.MULTILINE,
                 )
-                new_content, n = pattern.subn(rf"\1\2 \3", new_content)
+                new_content, n = pattern.subn(r"\1\2 \3", new_content)
                 fixes += n
                 # Also handle deeper nesting: from a.b.module import X
                 pattern2 = re.compile(
                     rf"^(from\s+)\w+\.\w+\.({re.escape(mod)})\s+(import\s+.+)$",
                     re.MULTILINE,
                 )
-                new_content, n = pattern2.subn(rf"\1\2 \3", new_content)
+                new_content, n = pattern2.subn(r"\1\2 \3", new_content)
                 fixes += n
             if new_content != content:
                 py_file.write_text(new_content)
@@ -376,7 +374,7 @@ class WatcherAgent(BaseAgent):
             pattern = re.compile(
                 rf"(\b{re.escape(param_name)}\s*(?::[^=,)]+)?\s*=\s*){escaped_mutable}"
             )
-            new_source, count = pattern.subn(rf"\g<1>None", source, count=1)
+            new_source, count = pattern.subn(r"\g<1>None", source, count=1)
             if count == 0:
                 continue
 
@@ -923,11 +921,8 @@ class WatcherAgent(BaseAgent):
                 if chain_len < 3 or has_else or has_raise or not compared_var:
                     continue
 
-                # Determine indentation of the last elif
+                # Find the indentation of the if/elif keyword itself
                 if last_node.end_lineno and last_node.end_lineno <= len(lines):
-                    last_line = lines[last_node.end_lineno - 1]
-                    indent = len(last_line) - len(last_line.lstrip())
-                    # Find the indentation of the if/elif keyword itself
                     if_line = lines[last_node.lineno - 1]
                     if_indent = len(if_line) - len(if_line.lstrip())
                     else_line = " " * if_indent + "else:"
@@ -1122,8 +1117,9 @@ class WatcherAgent(BaseAgent):
         """
         tb = error.traceback or ""
 
+        # Validate source is parseable before attempting repair
         try:
-            tree = ast.parse(source)
+            ast.parse(source)
         except SyntaxError:
             return source, 0
 
@@ -1548,7 +1544,6 @@ class WatcherAgent(BaseAgent):
             # Ensure go.mod exists
             go_mod = ws_abs / "go.mod"
             if not go_mod.exists():
-                from pmca.utils.lang import detect_language
                 # Create a minimal module file
                 go_mod.write_text("module pmca_workspace\n\ngo 1.21\n")
 
@@ -1668,7 +1663,7 @@ class WatcherAgent(BaseAgent):
 
         # If nothing specific found, return last few lines
         if not errors and lines:
-            errors = [l.strip() for l in lines[-5:] if l.strip()]
+            errors = [line.strip() for line in lines[-5:] if line.strip()]
         return errors[:10]  # Cap at 10 errors
 
     @staticmethod
@@ -1746,9 +1741,9 @@ class WatcherAgent(BaseAgent):
 
             # Extract traceback (E-lines)
             e_lines = [
-                l.strip()
-                for l in section_content.split("\n")
-                if l.strip().startswith("E ")
+                line.strip()
+                for line in section_content.split("\n")
+                if line.strip().startswith("E ")
             ]
             traceback = "\n".join(e_lines)
 
@@ -1830,15 +1825,13 @@ class WatcherAgent(BaseAgent):
         review: ReviewResult,
         structured_errors: list[TestError],
         strategy: str,
-    ) -> "LessonRecord":
+    ) -> LessonRecord:
         """Distill a failed attempt into an abstract LessonRecord.
 
         Extracts error types and builds a concise summary from up to 3
         structured errors.  Never includes raw traces — only abstracted
         information suitable for prompt injection.
         """
-        from pmca.tasks.state import LessonRecord
-
         # Collect unique error types (cap at 3)
         error_types: list[str] = []
         seen: set[str] = set()
