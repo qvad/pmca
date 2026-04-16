@@ -72,6 +72,12 @@ _SKIP_LOCALS: frozenset[str] = frozenset({
     "self", "@py_builtins", "@py_assert", "request",
 })
 
+# Test-file variable names that are actually imported modules, not objects —
+# skipped by the mixed attribute/method call check.
+_API_CHECK_IGNORED_MODULES: frozenset[str] = frozenset({
+    "httpx", "os", "sys", "json", "re", "math", "asyncio", "yaml",
+})
+
 # Common imports that LLMs forget — maps name → import statement
 _KNOWN_IMPORTS: dict[str, str] = {
     # typing
@@ -1264,21 +1270,24 @@ class WatcherAgent(BaseAgent):
     def _check_api_consistency(workspace: Path) -> list[str]:
         """Detect attribute/method shadowing and mixed call sites.
 
-        Pass 1 — scans implementation files for classes where ``self.X = ...``
-        in ``__init__`` shadows a ``def X(self)`` method.
-
-        Pass 2 — scans test files for variables where the same name is used
-        both as a bare attribute access and as a method call.
+        Two passes:
+          1. implementation files — ``self.X = ...`` in ``__init__`` that shadows
+             ``def X(self)`` on the same class
+          2. test files — the same variable used as both bare attribute access
+             and method call (``obj.x`` plus ``obj.x()``)
 
         Returns a list of blocking error strings.
         """
         errors: list[str] = []
+        errors.extend(WatcherAgent._check_shadowing_in_impl(workspace))
+        errors.extend(WatcherAgent._check_mixed_calls_in_tests(workspace))
+        return errors
 
-        src_dir = workspace / "src"
-        if not src_dir.is_dir():
-            src_dir = workspace
-
-        # --- Pass 1: shadowing detection in implementation files ---
+    @staticmethod
+    def _check_shadowing_in_impl(workspace: Path) -> list[str]:
+        """Pass 1: flag classes where self.X attribute shadows def X method."""
+        src_dir = workspace / "src" if (workspace / "src").is_dir() else workspace
+        errors: list[str] = []
         for py_file in src_dir.glob("*.py"):
             if py_file.name.startswith("test_"):
                 continue
@@ -1287,44 +1296,62 @@ class WatcherAgent(BaseAgent):
             except SyntaxError:
                 continue
             for node in ast.walk(tree):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                attrs: set[str] = set()
-                methods: set[str] = set()
-                for item in node.body:
-                    if isinstance(item, ast.FunctionDef):
-                        if item.name == "__init__":
-                            # Collect self.X = ... assignments
-                            for stmt in ast.walk(item):
-                                if (isinstance(stmt, ast.Assign)
-                                        and len(stmt.targets) == 1
-                                        and isinstance(stmt.targets[0], ast.Attribute)
-                                        and isinstance(stmt.targets[0].value, ast.Name)
-                                        and stmt.targets[0].value.id == "self"):
-                                    attrs.add(stmt.targets[0].attr)
-                        else:
-                            # Non-__init__ method with self parameter
-                            if (item.args.args
-                                    and item.args.args[0].arg == "self"):
-                                methods.add(item.name)
-                shadows = attrs & methods
-                for name in sorted(shadows):
-                    errors.append(
-                        f"'{name}' is both an attribute and a method in "
-                        f"{node.name}; rename the attribute to '_{name}' "
-                        f"and keep the method"
-                    )
+                if isinstance(node, ast.ClassDef):
+                    errors.extend(WatcherAgent._class_shadowing_errors(node))
+        return errors
 
-        # --- Pass 2: mixed call-site detection in test files ---
+    @staticmethod
+    def _class_shadowing_errors(node: ast.ClassDef) -> list[str]:
+        """Build shadowing messages for one class definition."""
+        attrs, methods = WatcherAgent._collect_attrs_and_methods(node)
+        return [
+            f"'{name}' is both an attribute and a method in "
+            f"{node.name}; rename the attribute to '_{name}' "
+            f"and keep the method"
+            for name in sorted(attrs & methods)
+        ]
+
+    @staticmethod
+    def _collect_attrs_and_methods(node: ast.ClassDef) -> tuple[set[str], set[str]]:
+        """Return (self.X attributes set in __init__, def X(self) method names)."""
+        attrs: set[str] = set()
+        methods: set[str] = set()
+        for item in node.body:
+            if not isinstance(item, ast.FunctionDef):
+                continue
+            if item.name == "__init__":
+                attrs.update(WatcherAgent._self_attrs_in_init(item))
+            elif item.args.args and item.args.args[0].arg == "self":
+                methods.add(item.name)
+        return attrs, methods
+
+    @staticmethod
+    def _self_attrs_in_init(init_node: ast.FunctionDef) -> set[str]:
+        """Return attribute names assigned via ``self.X = ...`` inside __init__."""
+        attrs: set[str] = set()
+        for stmt in ast.walk(init_node):
+            if (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Attribute)
+                and isinstance(stmt.targets[0].value, ast.Name)
+                and stmt.targets[0].value.id == "self"
+            ):
+                attrs.add(stmt.targets[0].attr)
+        return attrs
+
+    @staticmethod
+    def _check_mixed_calls_in_tests(workspace: Path) -> list[str]:
+        """Pass 2: flag variables used as both attribute access and method call in tests."""
+        test_files: list[Path] = []
         test_dir = workspace / "tests"
-        test_files = list(test_dir.glob("test_*.py")) if test_dir.is_dir() else []
-        # Also check test files directly in workspace
-        test_files.extend(
-            f for f in workspace.glob("test_*.py") if f not in test_files
-        )
+        if test_dir.is_dir():
+            test_files.extend(test_dir.glob("test_*.py"))
+        for f in workspace.glob("test_*.py"):
+            if f not in test_files:
+                test_files.append(f)
 
-        _IGNORED_MODULES = {"httpx", "os", "sys", "json", "re", "math", "asyncio", "yaml"}
-
+        errors: list[str] = []
         for tf in test_files:
             try:
                 tree = ast.parse(tf.read_text())
@@ -1332,20 +1359,27 @@ class WatcherAgent(BaseAgent):
                 continue
             visitor = _UsageVisitor()
             visitor.visit(tree)
-            for var in visitor.calls:
-                if var in _IGNORED_MODULES:
-                    continue
-                if var not in visitor.accesses:
-                    continue
-                mixed = visitor.accesses[var] & visitor.calls[var]
-                # Filter out dunder names
-                mixed = {n for n in mixed if not (n.startswith("__") and n.endswith("__"))}
-                for name in sorted(mixed):
-                    errors.append(
-                        f"'{name}' used as both attribute and method call "
-                        f"for variable '{var}'"
-                    )
+            errors.extend(WatcherAgent._mixed_call_errors(visitor))
+        return errors
 
+    @staticmethod
+    def _mixed_call_errors(visitor) -> list[str]:
+        """Diff calls vs accesses per-variable, filter dunders + ignored modules."""
+        errors: list[str] = []
+        for var in visitor.calls:
+            if var in _API_CHECK_IGNORED_MODULES:
+                continue
+            if var not in visitor.accesses:
+                continue
+            mixed = {
+                n for n in (visitor.accesses[var] & visitor.calls[var])
+                if not (n.startswith("__") and n.endswith("__"))
+            }
+            for name in sorted(mixed):
+                errors.append(
+                    f"'{name}' used as both attribute and method call "
+                    f"for variable '{var}'"
+                )
         return errors
 
     async def static_analysis_gate(
