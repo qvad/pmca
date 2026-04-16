@@ -1058,10 +1058,11 @@ class WatcherAgent(BaseAgent):
 
     @staticmethod
     def _fix_typeerror_in_sort(source: str, error: TestError) -> tuple[str, int]:
-        """Fix TypeError from None comparison in sort keys.
+        """Wrap sort-key lambdas with None-safe tuples when a None comparison crashes.
 
-        When traceback mentions "'<' not supported" and a sort call is on
-        the failing line, wrap the key lambda with None-safe tuple.
+        Triggers only when the traceback contains "'<' not supported". For each
+        ``sorted()`` / ``.sort()`` call with a lambda key, replaces the lambda with
+        a None-safe equivalent via _make_none_safe_expr.
 
         Returns (new_source, fixes_applied).
         """
@@ -1074,113 +1075,114 @@ class WatcherAgent(BaseAgent):
         except SyntaxError:
             return source, 0
 
-        # Find the failing line number from traceback
-        error_lines: list[int] = []
-        for m in re.finditer(r"line (\d+)", tb):
-            error_lines.append(int(m.group(1)))
-
-        if not error_lines:
+        if not re.search(r"line (\d+)", tb):
             return source, 0
 
         lines = source.splitlines()
         fixes = 0
+        for lam in WatcherAgent._iter_sort_lambda_keys(tree):
+            new_lambda = WatcherAgent._build_none_safe_lambda(lam)
+            if new_lambda is None:
+                continue
+            if WatcherAgent._replace_lambda_in_source(lines, lam, new_lambda):
+                fixes += 1
 
-        # Find all sort/sorted calls and check if they're on an error line
+        if fixes == 0:
+            return source, 0
+
+        new_source = "\n".join(lines)
+        try:
+            ast.parse(new_source)
+        except SyntaxError:
+            return source, 0
+        return new_source, fixes
+
+    @staticmethod
+    def _iter_sort_lambda_keys(tree: ast.Module):
+        """Yield lambda nodes used as ``key=`` for sorted() / .sort() calls."""
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+            if not isinstance(node, ast.Call) or not node.lineno:
                 continue
-
-            is_sorted = isinstance(node.func, ast.Name) and node.func.id == "sorted"
-            is_sort_method = (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "sort"
-            )
-            if not is_sorted and not is_sort_method:
+            if not WatcherAgent._is_sort_call(node):
                 continue
-
-            # Check if this sort call is in a function that contains the error line
-            # (sort itself may not be on the exact error line, but in the same function)
-            call_line = node.lineno
-            if not call_line:
-                continue
-
-            # Find key= kwarg
-            key_kw = None
             for kw in node.keywords:
-                if kw.arg == "key":
-                    key_kw = kw
+                if kw.arg == "key" and isinstance(kw.value, ast.Lambda):
+                    yield kw.value
                     break
 
-            if key_kw is None:
-                # No key= means sorting by value directly; add a key
-                # This handles: sorted(items) where items contain None
-                continue
+    @staticmethod
+    def _is_sort_call(node: ast.Call) -> bool:
+        """True when call is ``sorted(...)`` or ``x.sort(...)``."""
+        if isinstance(node.func, ast.Name) and node.func.id == "sorted":
+            return True
+        return isinstance(node.func, ast.Attribute) and node.func.attr == "sort"
 
-            if not isinstance(key_kw.value, ast.Lambda):
-                continue
+    @staticmethod
+    def _build_none_safe_lambda(lam: ast.Lambda) -> str | None:
+        """Return a None-safe replacement lambda source, or None if no change is needed."""
+        args_src = ast.unparse(lam.args)
+        body = lam.body
 
-            lam = key_kw.value
-            body = lam.body
-            args_src = ast.unparse(lam.args)
-
-            # Handle both tuple and simple keys — reuse shared helper
-            if isinstance(body, ast.Tuple):
-                new_elts = []
-                any_changed = False
-                for elt in body.elts:
-                    g = WatcherAgent._make_none_safe_expr(elt)
-                    if g:
-                        new_elts.append(g)
-                        any_changed = True
-                    else:
-                        new_elts.append(ast.unparse(elt))
-                if not any_changed:
-                    continue
-                new_lambda = f"lambda {args_src}: ({', '.join(new_elts)})"
-            else:
-                g = WatcherAgent._make_none_safe_expr(body)
-                if not g:
-                    continue
-                new_lambda = f"lambda {args_src}: {g}"
-
-            old_lambda_src = ast.unparse(lam)
-            if lam.lineno and lam.lineno <= len(lines):
-                line_idx = lam.lineno - 1
-                line = lines[line_idx]
-                if old_lambda_src in line:
-                    lines[line_idx] = line.replace(old_lambda_src, new_lambda, 1)
-                    fixes += 1
+        if isinstance(body, ast.Tuple):
+            new_elts: list[str] = []
+            changed = False
+            for elt in body.elts:
+                guarded = WatcherAgent._make_none_safe_expr(elt)
+                if guarded:
+                    new_elts.append(guarded)
+                    changed = True
                 else:
-                    # Fallback: find lambda keyword by position
-                    lam_start = line.find("lambda")
-                    if lam_start >= 0:
-                        depth = 0
-                        end = len(line)
-                        for i in range(lam_start, len(line)):
-                            ch = line[i]
-                            if ch in "([{":
-                                depth += 1
-                            elif ch in ")]}":
-                                if depth == 0:
-                                    end = i
-                                    break
-                                depth -= 1
-                            elif ch == "," and depth == 0:
-                                end = i
-                                break
-                        old_text = line[lam_start:end].rstrip()
-                        if old_text:
-                            lines[line_idx] = line.replace(old_text, new_lambda, 1)
-                            fixes += 1
+                    new_elts.append(ast.unparse(elt))
+            if not changed:
+                return None
+            return f"lambda {args_src}: ({', '.join(new_elts)})"
 
-        if fixes > 0:
-            new_source = "\n".join(lines)
-            try:
-                ast.parse(new_source)
-            except SyntaxError:
-                return source, 0
-            return new_source, fixes
-        return source, 0
+        guarded = WatcherAgent._make_none_safe_expr(body)
+        if not guarded:
+            return None
+        return f"lambda {args_src}: {guarded}"
+
+    @staticmethod
+    def _replace_lambda_in_source(
+        lines: list[str], lam: ast.Lambda, new_lambda: str,
+    ) -> bool:
+        """Splice ``new_lambda`` in place of ``lam`` on its source line. True on success."""
+        if not lam.lineno or lam.lineno > len(lines):
+            return False
+
+        line_idx = lam.lineno - 1
+        line = lines[line_idx]
+        old_lambda_src = ast.unparse(lam)
+
+        if old_lambda_src in line:
+            lines[line_idx] = line.replace(old_lambda_src, new_lambda, 1)
+            return True
+
+        lam_start = line.find("lambda")
+        if lam_start < 0:
+            return False
+        end = WatcherAgent._scan_lambda_extent(line, lam_start)
+        old_text = line[lam_start:end].rstrip()
+        if not old_text:
+            return False
+        lines[line_idx] = line.replace(old_text, new_lambda, 1)
+        return True
+
+    @staticmethod
+    def _scan_lambda_extent(line: str, lam_start: int) -> int:
+        """Locate the end of a lambda expression by bracket/comma scan."""
+        depth = 0
+        for i in range(lam_start, len(line)):
+            ch = line[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    return i
+                depth -= 1
+            elif ch == "," and depth == 0:
+                return i
+        return len(line)
 
     @staticmethod
     def _fix_index_error(source: str, error: TestError) -> tuple[str, int]:
