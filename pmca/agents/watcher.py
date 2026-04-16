@@ -932,13 +932,12 @@ class WatcherAgent(BaseAgent):
 
     @staticmethod
     def _guard_missing_else_raise(source: str) -> tuple[str, int]:
-        """Add 'else: raise ValueError' to if/elif chains that handle enums.
+        """Add ``else: raise ValueError`` to dispatch-style if/elif chains.
 
         7B models often generate if/elif chains for op/func_name dispatch
-        without a final else clause. This adds 'else: raise ValueError(...)'.
-
-        Pattern: a function that has 3+ if/elif branches comparing the same
-        variable, with no else clause and no raise in the chain.
+        without a final else clause. This adds a ``raise ValueError`` at the
+        end of any chain with 3+ branches comparing the same variable and no
+        existing else / raise.
 
         Returns (new_source, fixes_applied).
         """
@@ -948,79 +947,79 @@ class WatcherAgent(BaseAgent):
             return source, 0
 
         lines = source.splitlines()
-        fixes = 0
-        insertions: list[tuple[int, str]] = []  # (line_idx_after, text_to_insert)
+        insertions: list[tuple[int, str]] = []
+        for if_node in WatcherAgent._iter_top_level_ifs_in_functions(tree):
+            guard = WatcherAgent._build_else_raise_insertion(if_node, lines)
+            if guard is not None:
+                insertions.append(guard)
 
-        for func_node in ast.walk(tree):
-            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-
-            for node in ast.iter_child_nodes(func_node):
-                if not isinstance(node, ast.If):
-                    continue
-
-                # Count the if/elif chain length
-                chain_len = 1
-                has_else = False
-                has_raise = False
-                compared_var = None
-                last_node = node
-
-                # Extract the compared variable from the first if
-                if isinstance(node.test, ast.Compare):
-                    if isinstance(node.test.left, ast.Name):
-                        compared_var = node.test.left.id
-
-                # Walk the elif chain
-                current = node
-                while current.orelse:
-                    if (
-                        len(current.orelse) == 1
-                        and isinstance(current.orelse[0], ast.If)
-                    ):
-                        current = current.orelse[0]
-                        chain_len += 1
-                        last_node = current
-                        # Check for raise in this branch
-                        for child in ast.walk(current):
-                            if isinstance(child, ast.Raise):
-                                has_raise = True
-                    else:
-                        has_else = True
-                        break
-
-                # Check for raise in any branch
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Raise):
-                        has_raise = True
-
-                # Only guard chains with 3+ branches, no else, comparing a variable
-                if chain_len < 3 or has_else or has_raise or not compared_var:
-                    continue
-
-                # Find the indentation of the if/elif keyword itself
-                if last_node.end_lineno and last_node.end_lineno <= len(lines):
-                    if_line = lines[last_node.lineno - 1]
-                    if_indent = len(if_line) - len(if_line.lstrip())
-                    else_line = " " * if_indent + "else:"
-                    raise_line = " " * if_indent + f"    raise ValueError(f\"Unknown {{repr({compared_var})}}\")"
-                    insertions.append(
-                        (last_node.end_lineno, f"{else_line}\n{raise_line}")
-                    )
-                    fixes += 1
-
-        # Apply insertions in reverse order
         for line_idx, text in sorted(insertions, reverse=True):
             lines.insert(line_idx, text)
 
-        if fixes > 0:
-            new_source = "\n".join(lines)
-            try:
-                ast.parse(new_source)
-            except SyntaxError:
-                return source, 0
-            return new_source, fixes
-        return source, 0
+        if not insertions:
+            return source, 0
+        new_source = "\n".join(lines)
+        try:
+            ast.parse(new_source)
+        except SyntaxError:
+            return source, 0
+        return new_source, len(insertions)
+
+    @staticmethod
+    def _iter_top_level_ifs_in_functions(tree: ast.Module):
+        """Yield every top-level ``ast.If`` inside any function definition."""
+        for func_node in ast.walk(tree):
+            if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.iter_child_nodes(func_node):
+                if isinstance(node, ast.If):
+                    yield node
+
+    @staticmethod
+    def _analyze_if_chain(
+        node: ast.If,
+    ) -> tuple[int, bool, bool, str | None, ast.If]:
+        """Walk an if/elif chain. Returns (chain_len, has_else, has_raise, compared_var, last_if)."""
+        compared_var = None
+        if isinstance(node.test, ast.Compare) and isinstance(node.test.left, ast.Name):
+            compared_var = node.test.left.id
+
+        chain_len = 1
+        has_else = False
+        has_raise = any(isinstance(c, ast.Raise) for c in ast.walk(node))
+        current = node
+        last_node = node
+
+        while current.orelse:
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                chain_len += 1
+                last_node = current
+                if any(isinstance(c, ast.Raise) for c in ast.walk(current)):
+                    has_raise = True
+            else:
+                has_else = True
+                break
+        return chain_len, has_else, has_raise, compared_var, last_node
+
+    @staticmethod
+    def _build_else_raise_insertion(
+        node: ast.If, lines: list[str],
+    ) -> tuple[int, str] | None:
+        """Return (insert_line_idx, text) for this chain's else:raise, or None if not a candidate."""
+        chain_len, has_else, has_raise, compared_var, last_node = (
+            WatcherAgent._analyze_if_chain(node)
+        )
+        if chain_len < 3 or has_else or has_raise or not compared_var:
+            return None
+        if not last_node.end_lineno or last_node.end_lineno > len(lines):
+            return None
+
+        if_line = lines[last_node.lineno - 1]
+        indent = " " * (len(if_line) - len(if_line.lstrip()))
+        else_line = f"{indent}else:"
+        raise_line = f"{indent}    raise ValueError(f\"Unknown {{repr({compared_var})}}\")"
+        return last_node.end_lineno, f"{else_line}\n{raise_line}"
 
     async def inject_defensive_guards(self, task: TaskNode) -> int:
         """Inject defensive guards into generated code before first test run.
