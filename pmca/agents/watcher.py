@@ -248,65 +248,80 @@ class WatcherAgent(BaseAgent):
     ) -> tuple[str, str] | None:
         """Find which source file and function a TestError originates from.
 
-        Parses the traceback for file paths and line numbers, then uses AST
-        to find which function contains that line. Only considers code files
-        (not test files).
+        Strategy per code file:
+          1. line-number match in traceback (covers most TypeError/KeyError)
+          2. test-name heuristic (``test_sort`` → function ``sort``)
+          3. single-function fallback (ignoring ``__init__``)
 
         Returns (relative_file_path, function_name) or None.
         """
-        # Strategy 1: parse traceback for file:line references
-        tb = error.traceback or ""
-
-        # Look for file references in traceback
         for code_file in code_files:
-            abs_path = workspace / code_file
-            if not abs_path.exists() or not code_file.endswith(".py"):
-                continue
+            functions = WatcherAgent._collect_file_functions(workspace, code_file)
+            if functions is None:
+                continue  # file missing/not Python/failed to parse
+            hit = WatcherAgent._match_function_for_error(error, functions)
+            if hit is not None:
+                return code_file, hit
+        return None
 
-            try:
-                source = abs_path.read_text()
-                tree = ast.parse(source)
-            except (OSError, SyntaxError):
-                continue
+    @staticmethod
+    def _collect_file_functions(
+        workspace: Path, code_file: str,
+    ) -> list[tuple[str, int, int]] | None:
+        """Return [(name, start_line, end_line)] for every function in a code file.
 
-            # Strategy 2: if error has source_line, find which function contains
-            # code that matches the error pattern
-            # For TypeError/KeyError, the error often comes from the source code
-            # For AssertionError, it comes from tests — but we want the CODE function
-            # that produced the wrong result
+        Returns None when the file cannot be read/parsed (caller should skip).
+        """
+        abs_path = workspace / code_file
+        if not abs_path.exists() or not code_file.endswith(".py"):
+            return None
+        try:
+            tree = ast.parse(abs_path.read_text())
+        except (OSError, SyntaxError):
+            return None
 
-            # Collect all functions with their line ranges
-            functions: list[tuple[str, int, int]] = []
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    if node.end_lineno is not None:
-                        functions.append((node.name, node.lineno, node.end_lineno))
+        functions: list[tuple[str, int, int]] = []
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.end_lineno is not None
+            ):
+                functions.append((node.name, node.lineno, node.end_lineno))
+        return functions or None
 
-            if not functions:
-                continue
+    @staticmethod
+    def _match_function_for_error(
+        error: TestError, functions: list[tuple[str, int, int]],
+    ) -> str | None:
+        """Try line-match → test-name heuristic → single-function fallback."""
+        tb = error.traceback or ""
+        for m in re.finditer(r"line (\d+)", tb):
+            lineno = int(m.group(1))
+            for fname, start, end in functions:
+                if start <= lineno <= end:
+                    return fname
 
-            # For TypeError/KeyError: search traceback for line numbers in this file
-            for m in re.finditer(r"line (\d+)", tb):
-                lineno = int(m.group(1))
-                for fname, start, end in functions:
-                    if start <= lineno <= end:
-                        return code_file, fname
+        name_match = WatcherAgent._match_function_by_test_name(error.test_name, functions)
+        if name_match:
+            return name_match
 
-            # For AssertionError: try to find the function being tested
-            # The test name often contains the function name: test_sort → sort
-            test_name = error.test_name.split("::")[-1] if "::" in error.test_name else error.test_name
-            # Strip "test_" prefix to get the likely function name
-            if test_name.startswith("test_"):
-                target = test_name[5:]
-                for fname, _start, _end in functions:
-                    if fname == target or target in fname or fname in target:
-                        return code_file, fname
+        non_init = [f for f, *_ in functions if f != "__init__"]
+        if len(non_init) == 1:
+            return non_init[0]
+        return None
 
-            # Fallback: if only one non-__init__ function exists, use it
-            non_init = [(f, s, e) for f, s, e in functions if f != "__init__"]
-            if len(non_init) == 1:
-                return code_file, non_init[0][0]
-
+    @staticmethod
+    def _match_function_by_test_name(
+        test_name: str, functions: list[tuple[str, int, int]],
+    ) -> str | None:
+        """Map ``test_X`` → function whose name matches or overlaps with ``X``."""
+        name = test_name.split("::")[-1] if "::" in test_name else test_name
+        if not name.startswith("test_"):
+            return None
+        target = name[5:]
+        for fname, *_ in functions:
+            if fname == target or target in fname or fname in target:
+                return fname
         return None
 
     @staticmethod
