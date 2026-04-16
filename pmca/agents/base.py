@@ -117,44 +117,10 @@ class BaseAgent(ABC):
 
         Inspects AST of each source file, finds the primary class, and derives
         the correct snake_case module name. Only renames when the current
-        filename is the same word mangled (e.g. lrucache.py + class LRUCache →
-        lru_cache.py). Does NOT rename unrelated filenames.
+        filename is the same word mangled (e.g. ``lrucache.py`` + class
+        ``LRUCache`` → ``lru_cache.py``). Does NOT rename unrelated filenames.
         """
-        import ast
-        from pathlib import PurePosixPath
-        rename_map: dict[str, str] = {}  # old_stem -> new_stem
-
-        for f in files:
-            p = PurePosixPath(f.path)
-            if p.suffix != ".py":
-                continue
-            stem = p.stem
-            if stem.startswith("test_") or stem == "__init__":
-                continue
-
-            # Find primary public class
-            try:
-                tree = ast.parse(f.content)
-            except SyntaxError:
-                continue
-            class_name = None
-            for node in ast.iter_child_nodes(tree):
-                if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-                    class_name = node.name
-                    break
-            if not class_name:
-                continue
-
-            # Derive correct snake_case module name from class
-            correct_stem = BaseAgent._camel_to_snake(class_name)
-            if correct_stem == stem:
-                continue  # already correct
-
-            # Only rename if it's the same word mangled — compare without
-            # underscores.  e.g. "lrucache" vs "lru_cache" both → "lrucache"
-            if stem.replace("_", "") == correct_stem.replace("_", ""):
-                rename_map[stem] = correct_stem
-
+        rename_map = self._build_rename_map(files)
         if not rename_map:
             return files
 
@@ -162,25 +128,58 @@ class BaseAgent(ABC):
             self._log.info(f"Normalized filename: {old}.py → {new}.py")
         self.filename_normalizations += len(rename_map)
 
-        result: list[CodeFile] = []
+        return [self._apply_rename(f, rename_map) for f in files]
+
+    @staticmethod
+    def _build_rename_map(files: list[CodeFile]) -> dict[str, str]:
+        """Return {old_stem: new_stem} for files where stem mismatches primary class."""
+        from pathlib import PurePosixPath
+        rename_map: dict[str, str] = {}
         for f in files:
             p = PurePosixPath(f.path)
-            new_path = f.path
-            # Rename the source file itself
-            if p.suffix == ".py" and p.stem in rename_map:
+            if p.suffix != ".py" or p.stem.startswith("test_") or p.stem == "__init__":
+                continue
+            class_name = BaseAgent._primary_public_class(f.content)
+            if not class_name:
+                continue
+            correct_stem = BaseAgent._camel_to_snake(class_name)
+            if correct_stem == p.stem:
+                continue
+            # Only rename when same word mangled (e.g. lrucache ≡ lru_cache).
+            if p.stem.replace("_", "") == correct_stem.replace("_", ""):
+                rename_map[p.stem] = correct_stem
+        return rename_map
+
+    @staticmethod
+    def _primary_public_class(source: str) -> str | None:
+        """Return the first top-level non-underscore class name, or None."""
+        import ast
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return None
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                return node.name
+        return None
+
+    @staticmethod
+    def _apply_rename(f: CodeFile, rename_map: dict[str, str]) -> CodeFile:
+        """Rewrite path and import statements for one CodeFile using ``rename_map``."""
+        from pathlib import PurePosixPath
+        p = PurePosixPath(f.path)
+        new_path = f.path
+        if p.suffix == ".py":
+            if p.stem in rename_map:
                 new_path = str(p.with_stem(rename_map[p.stem]))
-            # Rename test file if it tracks an old stem
-            if p.suffix == ".py" and p.stem.startswith("test_"):
-                test_base = p.stem[5:]  # strip "test_"
-                if test_base in rename_map:
-                    new_path = str(p.with_stem(f"test_{rename_map[test_base]}"))
-            # Fix imports in content
-            content = f.content
-            for old_stem, new_stem in rename_map.items():
-                content = content.replace(f"from {old_stem} import", f"from {new_stem} import")
-                content = content.replace(f"import {old_stem}", f"import {new_stem}")
-            result.append(CodeFile(path=new_path, content=content))
-        return result
+            elif p.stem.startswith("test_") and p.stem[5:] in rename_map:
+                new_path = str(p.with_stem(f"test_{rename_map[p.stem[5:]]}"))
+
+        content = f.content
+        for old_stem, new_stem in rename_map.items():
+            content = content.replace(f"from {old_stem} import", f"from {new_stem} import")
+            content = content.replace(f"import {old_stem}", f"import {new_stem}")
+        return CodeFile(path=new_path, content=content)
 
     def _parse_code_blocks(self, response: str) -> list[CodeFile]:
         """Parse fenced code blocks with file paths from model response."""
