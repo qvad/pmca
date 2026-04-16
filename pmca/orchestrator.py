@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -18,7 +19,7 @@ from pmca.agents.watcher import WatcherAgent
 from pmca.api.events import CascadeEvent, EventType
 from pmca.models.config import AgentRole, Config
 from pmca.models.manager import ModelManager
-from pmca.tasks.state import LessonRecord, ReviewResult, TaskStatus, TaskType
+from pmca.tasks.state import LessonRecord, ReviewResult, TaskStatus, TaskType, TestResult
 from pmca.tasks.tree import TaskNode, TaskTree
 from pmca.utils.assembler import FileAssembler
 from pmca.utils.context import ContextManager
@@ -32,6 +33,41 @@ console = get_console()
 # Regex for metadata parsing in subtask descriptions
 _EXPORTS_RE = re.compile(r"EXPORTS:\s*(.+)")
 _DEPENDS_RE = re.compile(r"DEPENDS_ON:\s*(.+)", re.IGNORECASE)
+
+# Reviewer prompt fragments — kept as module constants so they're shared and
+# don't clutter review_phase().
+_TEST_STATUS_PASSING = (
+    "\n## Test Status\n"
+    "ALL TESTS PASS. The code has been tested and produces correct "
+    "results. You are acting as a four-eyes sanity check — only reject "
+    "if the code is clearly faked (hardcoded return values, stub "
+    "implementations) or is missing entire functions from the spec. "
+    "Do NOT reject working code for style, naming, or minor issues.\n"
+)
+_TEST_STATUS_FAILING = (
+    "\n## Test Status\n"
+    "Tests are FAILING with assertion errors. Focus your review "
+    "on finding the bugs causing test failures.\n"
+)
+
+
+def _now() -> datetime.datetime:
+    """Current timestamp — centralized to avoid `__import__('datetime')` at every call site."""
+    return datetime.datetime.now()
+
+
+def _missing_names_failure(missing_names: list) -> ReviewResult:
+    """Build a failure ReviewResult for spec-coverage-gate overrides."""
+    return ReviewResult(
+        passed=False,
+        issues=[f"Missing function/class from spec: {n}" for n in missing_names],
+        suggestions=[
+            f"Implement the '{n}' function as described in the specification"
+            for n in missing_names
+        ],
+        timestamp=_now(),
+        model_used="spec-coverage-gate",
+    )
 
 
 class Orchestrator:
@@ -286,7 +322,7 @@ class Orchestrator:
                                 passed=False,
                                 issues=[f"Child task failed: {child.title}"],
                                 suggestions=[],
-                                timestamp=__import__("datetime").datetime.now(),
+                                timestamp=_now(),
                                 model_used="orchestrator",
                             )
                         )
@@ -308,7 +344,7 @@ class Orchestrator:
                                 passed=False,
                                 issues=[f"All children failed: {failed_children}"],
                                 suggestions=[],
-                                timestamp=__import__("datetime").datetime.now(),
+                                timestamp=_now(),
                                 model_used="orchestrator",
                             )
                         )
@@ -612,7 +648,7 @@ class Orchestrator:
             task.transition(TaskStatus.CODING)
         else:
             task.status = TaskStatus.CODING
-            task.updated_at = __import__("datetime").datetime.now()
+            task.updated_at = _now()
 
         self._save_state()
 
@@ -761,10 +797,56 @@ class Orchestrator:
               → if tests fail, review → combine issues → fix
         """
         log.info(f"[blue]REVIEW[/blue] phase for: {task.title}")
-        task.status = TaskStatus.REVIEWING
-        task.updated_at = __import__("datetime").datetime.now()
-        self._save_state()
+        self._begin_review_phase(task)
 
+        code_content = self._gather_code(task)
+        lesson_records: list[LessonRecord] = []
+        max_retries = self._config.cascade.max_retries
+
+        for attempt in range(max_retries + 1):
+            smoke_result = await self._run_smoke_test(task)
+
+            if smoke_result.passed:
+                review = await self._review_passing_code(task, code_content)
+                if review.passed and await self._verify_and_finalize(task, code_content, review):
+                    return task
+                review = self._augment_with_lint_issues(task, review)
+                structured_errors: list = []
+            else:
+                structured_errors = self._watcher.extract_structured_errors(smoke_result.output)
+                review = await self._build_failure_review(
+                    task, code_content, smoke_result, structured_errors,
+                )
+
+            self._record_lesson(attempt, review, structured_errors, lesson_records)
+
+            if attempt >= max_retries:
+                break
+
+            self._announce_retry(task, attempt, max_retries)
+            if self._is_fresh_start_attempt(attempt):
+                await self._regenerate_from_scratch(task)
+            else:
+                resolved_by_cheap_fixes = await self._apply_cheap_fixes(task, structured_errors)
+                if resolved_by_cheap_fixes:
+                    code_content = self._gather_code(task)
+                    continue
+                await self._invoke_coder_fix(task, code_content, review, lesson_records, attempt)
+
+            code_content = self._gather_code(task)
+            await self._post_fix_gates(task)
+
+        await self._persist_failure_memory(task, lesson_records)
+        return self._mark_task_failed(task, max_retries)
+
+    # ------------------------------------------------------------------
+    # review_phase helpers
+    # ------------------------------------------------------------------
+
+    def _begin_review_phase(self, task: TaskNode) -> None:
+        task.status = TaskStatus.REVIEWING
+        task.updated_at = _now()
+        self._save_state()
         self._emit(CascadeEvent(
             event_type=EventType.PHASE_START,
             task_title=task.title,
@@ -773,429 +855,377 @@ class Orchestrator:
             message=f"Reviewing: {task.title}",
         ))
 
-        # Gather code content
-        code_content = self._gather_code(task)
+    async def _run_smoke_test(self, task: TaskNode) -> TestResult:
+        """Run tests before LLM review. Emits a TEST_RESULT event."""
+        smoke_result = await self._watcher.run_tests(task)
+        self._emit(CascadeEvent(
+            event_type=EventType.TEST_RESULT,
+            task_title=task.title,
+            task_id=task.id,
+            phase="review",
+            message="Smoke test passed" if smoke_result.passed else "Smoke test failed",
+            data={"passed": smoke_result.passed, "smoke": True},
+        ))
+        return smoke_result
 
-        # Track lessons from failed attempts for injection into fix prompts
-        lesson_records: list[LessonRecord] = []
+    async def _review_passing_code(self, task: TaskNode, code_content: str) -> ReviewResult:
+        """Tests pass. Invoke reviewer (or bypass it) and enforce spec-coverage gate."""
+        missing_names = getattr(task, "_missing_spec_names", [])
+        spec_for_review = self._spec_with_missing_names(task.spec, missing_names)
 
-        for attempt in range(self._config.cascade.max_retries + 1):
-            # Reset per-iteration state
-            structured_errors: list = []
+        if self._should_bypass_reviewer(missing_names):
+            log.info("Reviewer bypass — tests pass, no spec gaps, auto-approving")
+            review = ReviewResult(
+                passed=True, issues=[], suggestions=[],
+                timestamp=_now(), model_used="bypass",
+            )
+        else:
+            review = await self._reviewer.verify_code(
+                code_content, spec_for_review, test_status=_TEST_STATUS_PASSING,
+            )
+        task.review_history.append(review)
 
-            # --- Pre-review smoke test ---
-            # Run tests BEFORE calling the reviewer LLM. If tests crash on
-            # import/syntax errors, skip review entirely and go straight to fix.
-            smoke_result = await self._watcher.run_tests(task)
+        if review.passed and missing_names:
+            log.warning(f"Overriding review pass — missing names: {missing_names}")
+            review = _missing_names_failure(missing_names)
+            task.review_history.append(review)
 
-            self._emit(CascadeEvent(
-                event_type=EventType.TEST_RESULT,
-                task_title=task.title,
-                task_id=task.id,
-                phase="review",
-                message="Smoke test passed" if smoke_result.passed else "Smoke test failed",
-                data={"passed": smoke_result.passed, "smoke": True},
-            ))
+        self._emit(CascadeEvent(
+            event_type=EventType.REVIEW_RESULT,
+            task_title=task.title,
+            task_id=task.id,
+            phase="review",
+            message="Review passed" if review.passed else f"Review failed: {', '.join(review.issues[:3])}",
+            data={"passed": review.passed, "issues": review.issues},
+        ))
+        return review
 
-            if smoke_result.passed:
-                # Tests pass — proceed with code review + faking check
-                # Inject missing spec names into the spec context for the reviewer
-                spec_for_review = task.spec
-                missing_names = getattr(task, "_missing_spec_names", [])
-                if missing_names:
-                    spec_for_review += (
-                        "\n\n## CRITICAL: Missing Functions\n"
-                        "The following functions/classes from the spec are NOT "
-                        "implemented in the code. This is a FAILURE:\n"
-                        + "\n".join(f"- {n}" for n in missing_names)
-                    )
+    def _should_bypass_reviewer(self, missing_names: list) -> bool:
+        c = self._config.cascade
+        return (c.reviewer_bypass_on_pass or not c.use_llm_reviewer) and not missing_names
 
-                # Reviewer bypass: if tests pass and no spec coverage gaps,
-                # skip the LLM reviewer entirely and auto-pass.
-                # OR: if use_llm_reviewer is disabled globally for this model.
-                bypass = (
-                    (self._config.cascade.reviewer_bypass_on_pass or not self._config.cascade.use_llm_reviewer)
-                    and not missing_names
-                )
-                if bypass:
-                    log.info("Reviewer bypass — tests pass, no spec gaps, auto-approving")
-                    review = ReviewResult(
-                        passed=True,
-                        issues=[],
-                        suggestions=[],
-                        timestamp=__import__("datetime").datetime.now(),
-                        model_used="bypass",
-                    )
-                else:
-                    test_status = (
-                        "\n## Test Status\n"
-                        "ALL TESTS PASS. The code has been tested and produces correct "
-                        "results. You are acting as a four-eyes sanity check — only reject "
-                        "if the code is clearly faked (hardcoded return values, stub "
-                        "implementations) or is missing entire functions from the spec. "
-                        "Do NOT reject working code for style, naming, or minor issues.\n"
-                    )
-                    review = await self._reviewer.verify_code(
-                        code_content, spec_for_review, test_status=test_status
-                    )
-                task.review_history.append(review)
+    @staticmethod
+    def _spec_with_missing_names(spec: str, missing_names: list) -> str:
+        if not missing_names:
+            return spec
+        return spec + (
+            "\n\n## CRITICAL: Missing Functions\n"
+            "The following functions/classes from the spec are NOT "
+            "implemented in the code. This is a FAILURE:\n"
+            + "\n".join(f"- {n}" for n in missing_names)
+        )
 
-                # Force-fail if deterministic check found missing names
-                if review.passed and missing_names:
-                    log.warning(
-                        f"Overriding review pass — spec-coverage gate found "
-                        f"missing: {missing_names}"
-                    )
-                    review = ReviewResult(
-                        passed=False,
-                        issues=[
-                            f"Missing function/class from spec: {n}"
-                            for n in missing_names
-                        ],
-                        suggestions=[
-                            f"Implement the '{n}' function as described in the specification"
-                            for n in missing_names
-                        ],
-                        timestamp=__import__("datetime").datetime.now(),
-                        model_used="spec-coverage-gate",
-                    )
-                    task.review_history.append(review)
+    async def _verify_and_finalize(
+        self, task: TaskNode, code_content: str, review: ReviewResult,
+    ) -> bool:
+        """Run faking check if applicable, then mark VERIFIED. Returns True if verified."""
+        if not self._project_mode:
+            test_content = self._gather_tests(task)
+            if test_content:
+                fake_check = await self._watcher.check_not_faked(code_content, test_content)
+                task.review_history.append(fake_check)
+                if not fake_check.passed:
+                    log.warning("Code appears to be faked, retrying")
+                    return False
 
-                self._emit(CascadeEvent(
-                    event_type=EventType.REVIEW_RESULT,
-                    task_title=task.title,
-                    task_id=task.id,
-                    phase="review",
-                    message="Review passed" if review.passed else f"Review failed: {', '.join(review.issues[:3])}",
-                    data={"passed": review.passed, "issues": review.issues},
-                ))
+        task.transition(TaskStatus.VERIFIED)
+        if self._config.workspace.git_checkpoint:
+            task.git_checkpoint = self._git_manager.checkpoint(task, "verified")
+        log.info(f"Task '{task.title}' verified!")
+        self._emit(CascadeEvent(
+            event_type=EventType.TASK_COMPLETE,
+            task_title=task.title,
+            task_id=task.id,
+            phase="review",
+            message=f"Task verified: {task.title}",
+        ))
+        self._save_state()
+        return True
 
-                if review.passed:
-                    # Check for faked code (skip in project mode — leaf modules
-                    # are intentionally small by design)
-                    skip_fake_check = self._project_mode
-                    if not skip_fake_check:
-                        test_content = self._gather_tests(task)
-                        if test_content:
-                            fake_check = await self._watcher.check_not_faked(
-                                code_content, test_content
-                            )
-                            task.review_history.append(fake_check)
-                            if not fake_check.passed:
-                                log.warning("Code appears to be faked, retrying")
-                                review = fake_check
-                    if review.passed:
-                        task.transition(TaskStatus.VERIFIED)
-                        if self._config.workspace.git_checkpoint:
-                            commit_hash = self._git_manager.checkpoint(
-                                task, "verified"
-                            )
-                            task.git_checkpoint = commit_hash
-                        log.info(f"Task '{task.title}' verified!")
-                        self._emit(CascadeEvent(
-                            event_type=EventType.TASK_COMPLETE,
-                            task_title=task.title,
-                            task_id=task.id,
-                            phase="review",
-                            message=f"Task verified: {task.title}",
-                        ))
-                        self._save_state()
-                        return task
-                # Review failed but tests passed — use review issues for fix
-                # Append lint issues so the coder fixes them alongside review issues
-                lint_issues = getattr(task, "_lint_issues", [])
-                if lint_issues and not review.passed:
-                    review = ReviewResult(
-                        passed=False,
-                        issues=review.issues + [f"[lint] {e}" for e in lint_issues],
-                        suggestions=review.suggestions,
-                        timestamp=review.timestamp,
-                        model_used=review.model_used,
-                    )
+    def _augment_with_lint_issues(self, task: TaskNode, review: ReviewResult) -> ReviewResult:
+        """Append lint issues to a failed review so the coder fixes them alongside review issues."""
+        if review.passed:
+            return review
+        lint_issues = getattr(task, "_lint_issues", [])
+        if not lint_issues:
+            return review
+        return ReviewResult(
+            passed=False,
+            issues=review.issues + [f"[lint] {e}" for e in lint_issues],
+            suggestions=review.suggestions,
+            timestamp=review.timestamp,
+            model_used=review.model_used,
+        )
+
+    async def _build_failure_review(
+        self,
+        task: TaskNode,
+        code_content: str,
+        smoke_result: TestResult,
+        structured_errors: list,
+    ) -> ReviewResult:
+        """Tests failed. Build a review result from structured errors + optional LLM review."""
+        is_crash = any(
+            e.error_type in ("NameError", "ImportError", "SyntaxError", "TypeError")
+            for e in structured_errors
+        )
+        if is_crash:
+            log.warning(
+                f"Code crashes on import/syntax — skipping review "
+                f"({[e.error_type for e in structured_errors]})"
+            )
+            structured_issues = [e.format_for_prompt() for e in structured_errors]
+            lint_issues = getattr(task, "_lint_issues", [])
+            if lint_issues:
+                structured_issues += [f"[lint] {e}" for e in lint_issues]
+            return ReviewResult(
+                passed=False,
+                issues=structured_issues if structured_issues else smoke_result.errors,
+                suggestions=["Fix the crash before anything else"],
+                timestamp=_now(),
+                model_used="watcher",
+            )
+
+        # Tests fail with assertion errors — still run review for spec compliance
+        review = await self._reviewer.verify_code(
+            code_content, task.spec, test_status=_TEST_STATUS_FAILING,
+        )
+        task.review_history.append(review)
+
+        structured_issues = [e.format_for_prompt() for e in structured_errors]
+        if not structured_issues and smoke_result.output:
+            structured_issues = [f"Test output:\n{smoke_result.output[-1000:]}"]
+
+        if self._tester is not None:
+            tests_content = self._gather_tests(task)
+            analysis = await self._tester.analyze_failure(
+                task, smoke_result.output, code_content, tests_content,
+            )
+            log.info(
+                f"Failure analysis: root_cause={analysis.root_cause}, "
+                f"fix_target={analysis.suggested_fix_target}"
+            )
+            if analysis.specific_issues:
+                structured_issues = analysis.specific_issues
+
+        combined_issues = review.issues + structured_issues
+        lint_issues = getattr(task, "_lint_issues", [])
+        if lint_issues:
+            combined_issues += [f"[lint] {e}" for e in lint_issues]
+
+        log.warning(f"Tests failed: {[e.error_type for e in structured_errors]}")
+        return ReviewResult(
+            passed=False,
+            issues=combined_issues,
+            suggestions=review.suggestions + ["Fix the failing tests"],
+            timestamp=_now(),
+            model_used="watcher+reviewer",
+        )
+
+    def _record_lesson(
+        self,
+        attempt: int,
+        review: ReviewResult,
+        structured_errors: list,
+        lesson_records: list[LessonRecord],
+    ) -> None:
+        if not self._config.cascade.lesson_injection:
+            return
+        strategy = "fix_tests" if (attempt > 0 and attempt % 2 == 0) else "fix_code"
+        lesson = self._watcher.extract_lesson(
+            attempt=attempt + 1,
+            review=review,
+            structured_errors=structured_errors,
+            strategy=strategy,
+        )
+        lesson_records.append(lesson)
+        self._gate_stats["lessons_injected"] += 1
+
+    def _announce_retry(self, task: TaskNode, attempt: int, max_retries: int) -> None:
+        log.info(f"Review failed, retry {attempt + 1}/{max_retries}")
+        task.retry_count += 1
+        self._emit(CascadeEvent(
+            event_type=EventType.RETRY,
+            task_title=task.title,
+            task_id=task.id,
+            phase="review",
+            message=f"Retry {attempt + 1}/{max_retries}",
+            data={"attempt": attempt + 1, "max_retries": max_retries},
+        ))
+
+    def _is_fresh_start_attempt(self, attempt: int) -> bool:
+        return (
+            attempt > 0
+            and attempt % self._config.cascade.fresh_start_after == 0
+        )
+
+    async def _regenerate_from_scratch(self, task: TaskNode) -> None:
+        log.info("Fresh start — regenerating from scratch")
+        context = self._context_manager.build_context(task)
+        fresh_role = getattr(task, "_coder_role_override", None)
+        use_think = getattr(task, "_think_override", None)
+        if self._config.cascade.test_first and task.test_files:
+            tests_content = self._gather_tests(task)
+            code_files = await self._coder.implement_with_tests(task, context, tests_content)
+        else:
+            code_files = await self._coder.implement(
+                task, context, role_override=fresh_role, think=use_think,
+            )
+
+        new_code: dict = {}
+        new_tests = dict(task.test_files)
+        for cf in code_files:
+            self._file_manager.write_file(cf.path, cf.content)
+            if cf.path.startswith("test") or "/test_" in cf.path:
+                new_tests[cf.path] = cf.content
             else:
-                # Tests failed — build structured error context
-                structured_errors = self._watcher.extract_structured_errors(
-                    smoke_result.output
-                )
+                new_code[cf.path] = cf.content
+        if new_code:
+            task.code_files = new_code
+        task.test_files = new_tests
 
-                # Check if it's a crash (import/syntax) vs test assertion failure
-                is_crash = any(
-                    e.error_type in ("NameError", "ImportError", "SyntaxError", "TypeError")
-                    for e in structured_errors
-                )
+    async def _apply_cheap_fixes(self, task: TaskNode, structured_errors: list) -> bool:
+        """Try runtime fixes, micro-fix, and triage. Returns True if tests pass after any of them."""
+        if not structured_errors:
+            return False
 
-                if is_crash:
-                    # Skip LLM review — code doesn't even import
-                    log.warning(
-                        f"Code crashes on import/syntax — skipping review "
-                        f"({[e.error_type for e in structured_errors]})"
+        c = self._config.cascade
+        if c.runtime_fixes:
+            runtime_fixed = await self._watcher.fix_runtime_errors(task, structured_errors)
+            if runtime_fixed > 0:
+                log.info(f"Runtime-fixed {runtime_fixed} error(s)")
+                self._gate_stats["runtime_fixes"] = self._gate_stats.get("runtime_fixes", 0) + runtime_fixed
+
+        if c.micro_fix:
+            micro_fixed = await self._watcher.targeted_micro_fix(task, structured_errors)
+            if micro_fixed > 0:
+                log.info(f"Micro-fixed {micro_fixed} function(s)")
+                self._gate_stats["micro_fixes"] += micro_fixed
+                if (await self._watcher.run_tests(task)).passed:
+                    return True
+
+        if c.test_triage:
+            triage_fixed = await self._triage_failing_tests(task, structured_errors)
+            if triage_fixed > 0:
+                log.info(f"Triage fixed {triage_fixed} issue(s)")
+                if (await self._watcher.run_tests(task)).passed:
+                    return True
+
+        return False
+
+    async def _invoke_coder_fix(
+        self,
+        task: TaskNode,
+        code_content: str,
+        review: ReviewResult,
+        lesson_records: list[LessonRecord],
+        attempt: int,
+    ) -> None:
+        fix_role = getattr(task, "_coder_role_override", None)
+        if fix_role and attempt >= 2:
+            log.info("Routing fallback: switching from reasoning model to fast coder")
+            fix_role = None
+        use_think = getattr(task, "_think_override", None)
+
+        fm_context = await self._build_failure_memory_context(review)
+
+        fix_files = await self._coder.fix(
+            task,
+            code_content,
+            "\n".join(review.issues),
+            lessons_str="\n".join(lr.summary for lr in lesson_records),
+            memory_str=fm_context,
+            retry_num=attempt + 1,
+            coder_role=fix_role,
+            think=use_think,
+        )
+        for cf in fix_files:
+            self._file_manager.write_file(cf.path, cf.content)
+
+    async def _build_failure_memory_context(self, review: ReviewResult) -> str:
+        if not self._failure_memory or not review.issues:
+            return ""
+        error_text = " ".join(review.issues[:3])
+        similar = self._failure_memory.query_similar(error_text)
+        patterns = self._failure_memory.query_patterns(error_text)
+        parts = []
+        if similar:
+            parts.append("Past similar failures:\n" + "\n".join(f"- {s}" for s in similar))
+        if patterns:
+            parts.append("Known patterns:\n" + "\n".join(p.format_for_prompt() for p in patterns))
+        return "\n".join(parts)
+
+    async def _post_fix_gates(self, task: TaskNode) -> None:
+        """Run all deterministic gates after a fix attempt: auto-fix, calibrate, oracle, mutation, spec, lint."""
+        auto_fixes = await self._watcher.auto_fix_deterministic(task)
+        if auto_fixes > 0:
+            log.info(f"Auto-fixed {auto_fixes} deterministic error(s) after retry")
+            self._gate_stats["auto_fix_retry"] += auto_fixes
+            if self._project_mode:
+                self._refresh_snippets(task)
+
+        if self._config.cascade.test_calibration:
+            recalibrated = await self._watcher.calibrate_tests(task)
+            if recalibrated > 0:
+                log.info(f"Re-calibrated {recalibrated} test assertion(s) after retry")
+                self._gate_stats["calibrations_retry"] += recalibrated
+
+            oracle_repaired = await self._watcher.oracle_repair_tests(task)
+            if oracle_repaired > 0:
+                log.info(f"Oracle-repaired {oracle_repaired} assertion(s) after retry")
+                self._gate_stats["oracle_repairs"] += oracle_repaired
+
+        if self._config.cascade.mutation_oracle:
+            total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
+            if total > 0:
+                self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
+                self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
+                if kill_ratio < 0.5:
+                    warning = (
+                        f"Mutation oracle: only {killed}/{total} mutants killed "
+                        f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
                     )
-                    # Build structured issues for the fix prompt
-                    structured_issues = [e.format_for_prompt() for e in structured_errors]
-                    # Include lint issues — type errors often explain import/name crashes
-                    lint_issues = getattr(task, "_lint_issues", [])
-                    if lint_issues:
-                        structured_issues += [f"[lint] {e}" for e in lint_issues]
-                    review = ReviewResult(
-                        passed=False,
-                        issues=structured_issues if structured_issues else smoke_result.errors,
-                        suggestions=["Fix the crash before anything else"],
-                        timestamp=__import__("datetime").datetime.now(),
-                        model_used="watcher",
-                    )
-                else:
-                    # Tests fail with assertion errors — still run review for spec compliance
-                    fail_test_status = (
-                        "\n## Test Status\n"
-                        "Tests are FAILING with assertion errors. Focus your review "
-                        "on finding the bugs causing test failures.\n"
-                    )
-                    review = await self._reviewer.verify_code(
-                        code_content, task.spec, test_status=fail_test_status
-                    )
-                    task.review_history.append(review)
+                    log.warning(warning)
+                    task._mutation_oracle_warning = warning
 
-                    # Combine review issues with structured test errors
-                    structured_issues = [e.format_for_prompt() for e in structured_errors]
-                    # Fallback: if no structured errors, include raw test output
-                    if not structured_issues and smoke_result.output:
-                        raw_excerpt = smoke_result.output[-1000:]  # last 1000 chars
-                        structured_issues = [f"Test output:\n{raw_excerpt}"]
+        missing_names = await self._watcher.spec_coverage_check(task)
+        task._missing_spec_names = missing_names
+        log.info(f"Still missing after fix: {missing_names}" if missing_names
+                 else "Spec-coverage gap resolved after fix")
 
-                    # Use Tester agent for failure analysis if available
-                    if self._tester is not None:
-                        tests_content = self._gather_tests(task)
-                        analysis = await self._tester.analyze_failure(
-                            task, smoke_result.output, code_content, tests_content,
-                        )
-                        log.info(
-                            f"Failure analysis: root_cause={analysis.root_cause}, "
-                            f"fix_target={analysis.suggested_fix_target}"
-                        )
-                        # Use analysis-specific issues if available
-                        if analysis.specific_issues:
-                            structured_issues = analysis.specific_issues
+        _, lint_info = await self._watcher.static_analysis_gate(task)
+        task._lint_issues = lint_info
+        log.info(f"Lint issues after fix ({len(lint_info)}): {lint_info}" if lint_info
+                 else "Lint issues resolved after fix")
 
-                    combined_issues = review.issues + structured_issues
-                    # Append lint issues so the coder fixes them alongside test failures
-                    lint_issues = getattr(task, "_lint_issues", [])
-                    if lint_issues:
-                        combined_issues += [f"[lint] {e}" for e in lint_issues]
-                    review = ReviewResult(
-                        passed=False,
-                        issues=combined_issues,
-                        suggestions=review.suggestions + ["Fix the failing tests"],
-                        timestamp=__import__("datetime").datetime.now(),
-                        model_used="watcher+reviewer",
-                    )
+    async def _persist_failure_memory(
+        self, task: TaskNode, lesson_records: list[LessonRecord],
+    ) -> None:
+        if not (self._failure_memory and lesson_records):
+            return
+        from pmca.utils.failure_memory import FailureEpisode
+        for lesson in lesson_records:
+            self._failure_memory.store_episode(FailureEpisode(
+                task_spec_summary=task.spec[:200] if task.spec else "",
+                error_signature=lesson.summary,
+                error_types=lesson.error_types,
+                fix_strategy=lesson.strategy,
+                fix_description=lesson.summary,
+                outcome="unresolved",
+                task_title=task.title,
+            ))
+        self._failure_memory.distill_patterns()
 
-                    log.warning(f"Tests failed: {[e.error_type for e in structured_errors]}")
-
-            # Extract lesson from this failed attempt
-            if self._config.cascade.lesson_injection:
-                strategy = "fix_tests" if (attempt > 0 and attempt % 2 == 0) else "fix_code"
-                lesson = self._watcher.extract_lesson(
-                    attempt=attempt + 1,
-                    review=review,
-                    structured_errors=structured_errors,
-                    strategy=strategy,
-                )
-                lesson_records.append(lesson)
-                self._gate_stats["lessons_injected"] += 1
-
-            # If we get here, review failed — try to fix
-            if attempt < self._config.cascade.max_retries:
-                log.info(f"Review failed, retry {attempt + 1}/{self._config.cascade.max_retries}")
-                task.retry_count += 1
-                self._emit(CascadeEvent(
-                    event_type=EventType.RETRY,
-                    task_title=task.title,
-                    task_id=task.id,
-                    phase="review",
-                    message=f"Retry {attempt + 1}/{self._config.cascade.max_retries}",
-                    data={"attempt": attempt + 1, "max_retries": self._config.cascade.max_retries},
-                ))
-
-                # Fresh start strategy: after N failed fixes, regenerate from scratch
-                is_fresh_start = (
-                    attempt > 0
-                    and attempt % self._config.cascade.fresh_start_after == 0
-                )
-
-                if is_fresh_start:
-                    log.info(f"Fresh start (attempt {attempt + 1}) — regenerating from scratch")
-                    context = self._context_manager.build_context(task)
-                    fresh_role = getattr(task, "_coder_role_override", None)
-                    if self._config.cascade.test_first and task.test_files:
-                        tests_content = self._gather_tests(task)
-                        code_files = await self._coder.implement_with_tests(
-                            task, context, tests_content,
-                        )
-                    else:
-                        use_think = getattr(task, "_think_override", None)
-                        code_files = await self._coder.implement(task, context, role_override=fresh_role, think=use_think)
-                    # Replace task file lists — fresh start may produce different paths
-                    new_code = {}
-                    new_tests = dict(task.test_files)  # keep test files from test-first
-                    for cf in code_files:
-                        self._file_manager.write_file(cf.path, cf.content)
-                        if cf.path.startswith("test") or "/test_" in cf.path:
-                            new_tests[cf.path] = cf.content
-                        else:
-                            new_code[cf.path] = cf.content
-                    if new_code:
-                        task.code_files = new_code
-                    task.test_files = new_tests
-                else:
-                    # Try zero-token runtime error fixes first
-                    if structured_errors and self._config.cascade.runtime_fixes:
-                        runtime_fixed = await self._watcher.fix_runtime_errors(
-                            task, structured_errors,
-                        )
-                        if runtime_fixed > 0:
-                            log.info(f"Runtime-fixed {runtime_fixed} error(s)")
-                            self._gate_stats["runtime_fixes"] = self._gate_stats.get("runtime_fixes", 0) + runtime_fixed
-
-                    # Try targeted micro-fix (cheap, surgical)
-                    micro_fixed = 0
-                    if structured_errors and self._config.cascade.micro_fix:
-                        micro_fixed = await self._watcher.targeted_micro_fix(
-                            task, structured_errors,
-                        )
-                        if micro_fixed > 0:
-                            log.info(f"Micro-fixed {micro_fixed} function(s)")
-                            self._gate_stats["micro_fixes"] += micro_fixed
-                            # Re-run tests to see if micro-fix resolved it
-                            retest = await self._watcher.run_tests(task)
-                            if retest.passed:
-                                code_content = self._gather_code(task)
-                                continue  # Skip coder.fix, go to review
-
-                    # Test triage: per-failure investigation cascade
-                    if structured_errors and self._config.cascade.test_triage:
-                        triage_fixed = await self._triage_failing_tests(
-                            task, structured_errors,
-                        )
-                        if triage_fixed > 0:
-                            log.info(f"Triage fixed {triage_fixed} issue(s)")
-                            # Re-run tests to see if triage resolved everything
-                            retest = await self._watcher.run_tests(task)
-                            if retest.passed:
-                                code_content = self._gather_code(task)
-                                continue  # Skip coder.fix, go to review
-
-                    # Adaptive routing: use reasoning model for first retry,
-                    # fall back to fast coder on subsequent retries
-                    fix_role = getattr(task, "_coder_role_override", None)
-                    if fix_role and attempt >= 2:
-                        log.info("Routing fallback: switching from reasoning model to fast coder")
-                        fix_role = None
-                    use_think = getattr(task, "_think_override", None)
-
-                    # Query failure memory for similar past failures
-                    fm_context = ""
-                    if self._failure_memory and review.issues:
-                        error_text = " ".join(review.issues[:3])
-                        similar = self._failure_memory.query_similar(error_text)
-                        patterns = self._failure_memory.query_patterns(error_text)
-                        parts = []
-                        if similar:
-                            parts.append("Past similar failures:\n" + "\n".join(f"- {s}" for s in similar))
-                        if patterns:
-                            parts.append("Known patterns:\n" + "\n".join(p.format_for_prompt() for p in patterns))
-                        fm_context = "\n".join(parts)
-
-                    fix_files = await self._coder.fix(
-                        task,
-                        code_content,
-                        "\n".join(review.issues),
-                        lessons_str="\n".join(lr.summary for lr in lesson_records),
-                        memory_str=fm_context,
-                        retry_num=attempt + 1,
-                        coder_role=fix_role,
-                        think=use_think,
-                    )
-                    for cf in fix_files:
-                        self._file_manager.write_file(cf.path, cf.content)
-
-                code_content = self._gather_code(task)
-
-                # Re-run auto-fix + calibration after each fix attempt
-                auto_fixes = await self._watcher.auto_fix_deterministic(task)
-                if auto_fixes > 0:
-                    log.info(f"Auto-fixed {auto_fixes} deterministic error(s) after retry")
-                    self._gate_stats["auto_fix_retry"] += auto_fixes
-                    if self._project_mode:
-                        self._refresh_snippets(task)
-                if self._config.cascade.test_calibration:
-                    recalibrated = await self._watcher.calibrate_tests(task)
-                    if recalibrated > 0:
-                        log.info(f"Re-calibrated {recalibrated} test assertion(s) after retry")
-                        self._gate_stats["calibrations_retry"] += recalibrated
-
-                    # Oracle repair after retry
-                    oracle_repaired = await self._watcher.oracle_repair_tests(task)
-                    if oracle_repaired > 0:
-                        log.info(f"Oracle-repaired {oracle_repaired} assertion(s) after retry")
-                        self._gate_stats["oracle_repairs"] += oracle_repaired
-
-                # Mutation oracle after retry
-                if self._config.cascade.mutation_oracle:
-                    total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
-                    if total > 0:
-                        self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
-                        self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
-                        if kill_ratio < 0.5:
-                            warning = (
-                                f"Mutation oracle: only {killed}/{total} mutants killed "
-                                f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
-                            )
-                            log.warning(warning)
-                            task._mutation_oracle_warning = warning
-
-                # Re-check spec coverage after fix
-                missing_names = await self._watcher.spec_coverage_check(task)
-                task._missing_spec_names = missing_names
-                if missing_names:
-                    log.info(f"Still missing after fix: {missing_names}")
-                else:
-                    log.info("Spec-coverage gap resolved after fix")
-
-                # Re-run linters after fix to update lint issues
-                _, lint_info = await self._watcher.static_analysis_gate(task)
-                task._lint_issues = lint_info
-                if lint_info:
-                    log.info(f"Lint issues after fix ({len(lint_info)}): {lint_info}")
-                else:
-                    log.info("Lint issues resolved after fix")
-
-        # Store failure episodes in memory
-        if self._failure_memory and lesson_records:
-            from pmca.utils.failure_memory import FailureEpisode
-            for lesson in lesson_records:
-                episode = FailureEpisode(
-                    task_spec_summary=task.spec[:200] if task.spec else "",
-                    error_signature=lesson.summary,
-                    error_types=lesson.error_types,
-                    fix_strategy=lesson.strategy,
-                    fix_description=lesson.summary,
-                    outcome="unresolved",
-                    task_title=task.title,
-                )
-                self._failure_memory.store_episode(episode)
-            # Periodically distill patterns
-            self._failure_memory.distill_patterns()
-
-        # Exhausted retries
-        log.error(f"Task '{task.title}' failed after {self._config.cascade.max_retries} retries")
+    def _mark_task_failed(self, task: TaskNode, max_retries: int) -> TaskNode:
+        log.error(f"Task '{task.title}' failed after {max_retries} retries")
         task.status = TaskStatus.FAILED
-        task.updated_at = __import__("datetime").datetime.now()
+        task.updated_at = _now()
         self._emit(CascadeEvent(
             event_type=EventType.TASK_FAILED,
             task_title=task.title,
             task_id=task.id,
             phase="review",
-            message=f"Task failed after {self._config.cascade.max_retries} retries: {task.title}",
+            message=f"Task failed after {max_retries} retries: {task.title}",
         ))
         self._save_state()
         return task
@@ -1358,7 +1388,7 @@ class Orchestrator:
             if not self._project_mode:
                 log.error(f"Cannot integrate — {len(failed)} children failed")
                 task.status = TaskStatus.FAILED
-                task.updated_at = __import__("datetime").datetime.now()
+                task.updated_at = _now()
                 self._save_state()
                 return task
             # Project mode: partial integration with verified children
@@ -1372,7 +1402,7 @@ class Orchestrator:
             )
 
         task.status = TaskStatus.INTEGRATING
-        task.updated_at = __import__("datetime").datetime.now()
+        task.updated_at = _now()
         self._save_state()
 
         self._emit(CascadeEvent(
@@ -1462,7 +1492,7 @@ class Orchestrator:
             else:
                 log.error(f"Integration failed for '{task.title}': {review.issues}")
                 task.status = TaskStatus.FAILED
-                task.updated_at = __import__("datetime").datetime.now()
+                task.updated_at = _now()
 
         self._save_state()
         return task
