@@ -710,14 +710,11 @@ class WatcherAgent(BaseAgent):
 
     @staticmethod
     def _guard_sort_keys(source: str) -> tuple[str, int]:
-        """Wrap sort key lambdas with None-safe expressions.
+        """Wrap sort-key lambdas with None-safe expressions (preventive, not error-driven).
 
         Handles both simple keys and tuple keys:
-          Before: key=lambda x: x.date
-          After:  key=lambda x: (x.date is None, x.date or "")
-
-          Before: key=lambda x: (x['done'], x[sort_by])
-          After:  key=lambda x: (x['done'], (x[sort_by] is None, x[sort_by] or ''))
+          key=lambda x: x.date        → key=lambda x: (x.date is None, x.date or "")
+          key=lambda x: (x['d'], x[k]) → key=lambda x: (x['d'], (x[k] is None, x[k] or ''))
 
         Skips elements that are already guarded, constants, or unary ops.
         Returns (new_source, fixes_applied).
@@ -728,104 +725,62 @@ class WatcherAgent(BaseAgent):
             return source, 0
 
         lines = source.splitlines()
-        fixes = 0
         replacements: list[tuple[int, str, str]] = []
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+        for lam in WatcherAgent._iter_sort_lambda_keys(tree):
+            new_lambda = WatcherAgent._build_none_safe_lambda(lam)
+            if new_lambda is None:
                 continue
-
-            is_sorted = isinstance(node.func, ast.Name) and node.func.id == "sorted"
-            is_sort_method = (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "sort"
+            WatcherAgent._record_lambda_replacement(
+                lines, lam, new_lambda, replacements,
             )
-            if not is_sorted and not is_sort_method:
-                continue
 
-            key_kw = None
-            for kw in node.keywords:
-                if kw.arg == "key":
-                    key_kw = kw
-                    break
-            if key_kw is None:
-                continue
+        fixes = WatcherAgent._apply_line_replacements_no_dedup(lines, replacements)
+        if fixes == 0:
+            return source, 0
 
-            if not isinstance(key_kw.value, ast.Lambda):
-                continue
+        new_source = "\n".join(lines)
+        try:
+            ast.parse(new_source)
+        except SyntaxError:
+            return source, 0
+        return new_source, fixes
 
-            lam = key_kw.value
-            body = lam.body
-            args_src = ast.unparse(lam.args)
+    @staticmethod
+    def _record_lambda_replacement(
+        lines: list[str],
+        lam: ast.Lambda,
+        new_lambda: str,
+        replacements: list[tuple[int, str, str]],
+    ) -> None:
+        """Add a (line_idx, old_text, new_lambda) entry. Falls back to column-scan if needed."""
+        if not lam.lineno or lam.lineno > len(lines):
+            return
+        line_idx = lam.lineno - 1
+        line = lines[line_idx]
 
-            # Case 1: Tuple key — guard individual elements
-            if isinstance(body, ast.Tuple):
-                new_elts = []
-                any_changed = False
-                for elt in body.elts:
-                    guarded = WatcherAgent._make_none_safe_expr(elt)
-                    if guarded:
-                        new_elts.append(guarded)
-                        any_changed = True
-                    else:
-                        new_elts.append(ast.unparse(elt))
-                if not any_changed:
-                    continue
-                guarded_body = f"({', '.join(new_elts)})"
-                new_lambda = f"lambda {args_src}: {guarded_body}"
-            else:
-                # Case 2: Simple key — wrap entire body
-                guarded = WatcherAgent._make_none_safe_expr(body)
-                if not guarded:
-                    continue
-                new_lambda = f"lambda {args_src}: {guarded}"
+        old_lambda_src = ast.unparse(lam)
+        if old_lambda_src in line:
+            replacements.append((line_idx, old_lambda_src, new_lambda))
+            return
 
-            # Try to match the lambda in the source line
-            # ast.unparse may use different quotes than the original source,
-            # so we try the unparsed version first, then fall back to
-            # extracting the lambda from the raw source via column offsets.
-            old_lambda_src = ast.unparse(lam)
-            if lam.lineno and lam.lineno <= len(lines):
-                line_idx = lam.lineno - 1
-                line = lines[line_idx]
-                if old_lambda_src in line:
-                    replacements.append((line_idx, old_lambda_src, new_lambda))
-                else:
-                    # Fallback: find 'lambda' keyword and extract to end of key=
-                    # by locating the key= keyword's col_offset
-                    lam_start = line.find("lambda")
-                    if lam_start >= 0:
-                        # Find the extent: from 'lambda' to the next top-level comma or ')'
-                        depth = 0
-                        end = len(line)
-                        for i in range(lam_start, len(line)):
-                            ch = line[i]
-                            if ch in "([{":
-                                depth += 1
-                            elif ch in ")]}":
-                                if depth == 0:
-                                    end = i
-                                    break
-                                depth -= 1
-                            elif ch == "," and depth == 0:
-                                end = i
-                                break
-                        old_text = line[lam_start:end].rstrip()
-                        if old_text:
-                            replacements.append((line_idx, old_text, new_lambda))
+        lam_start = line.find("lambda")
+        if lam_start < 0:
+            return
+        end = WatcherAgent._scan_lambda_extent(line, lam_start)
+        old_text = line[lam_start:end].rstrip()
+        if old_text:
+            replacements.append((line_idx, old_text, new_lambda))
 
+    @staticmethod
+    def _apply_line_replacements_no_dedup(
+        lines: list[str], replacements: list[tuple[int, str, str]],
+    ) -> int:
+        """Apply replacements in reverse line order; allow multiple fixes per line."""
+        fixes = 0
         for line_idx, old_text, new_text in sorted(replacements, reverse=True):
             lines[line_idx] = lines[line_idx].replace(old_text, new_text, 1)
             fixes += 1
-
-        if fixes > 0:
-            new_source = "\n".join(lines)
-            try:
-                ast.parse(new_source)
-            except SyntaxError:
-                return source, 0
-            return new_source, fixes
-        return source, 0
+        return fixes
 
     @staticmethod
     def _guard_index_zero(source: str) -> tuple[str, int]:
