@@ -457,46 +457,70 @@ class Orchestrator:
                     )
 
     async def _code_leaf(self, task: TaskNode) -> TaskNode:
-        """Code and verify a leaf task."""
-        difficulty, reasoning_heavy, signals = self._estimate_task_profile(task)
+        """Code and verify a leaf task.
+
+        Pipeline:
+          1. code_phase         — LLM generates code
+          2. pre_review_gates   — deterministic repairs + analysis (zero tokens)
+          3. review_phase       — LLM review + retry loop
+          4. post_verify_steps  — edge cases, interface extraction (on success)
+        """
+        _, reasoning_heavy, _ = self._estimate_task_profile(task)
         think_mode = reasoning_heavy or self._think_coder_hint
 
         task = await self.code_phase(task, think=think_mode)
         if task.is_failed:
             return task
 
-        # Auto-fix deterministic errors (missing imports, etc.) without LLM
+        await self._run_pre_review_gates(task)
+        task = await self.review_phase(task)
+
+        if task.is_complete:
+            await self._run_post_verify_steps(task)
+        return task
+
+    async def _run_pre_review_gates(self, task: TaskNode) -> None:
+        """Deterministic repair + analysis gates before review. Stores lint/spec state on task."""
+        await self._run_auto_fix(task)
+        await self._run_defensive_guards(task)
+        await self._run_static_analysis_gate(task)
+        await self._run_spec_coverage_gate(task)
+        await self._run_test_calibration_gates(task)
+        await self._run_mutation_oracle_gate(task)
+
+    async def _run_auto_fix(self, task: TaskNode) -> None:
         auto_fixes = await self._watcher.auto_fix_deterministic(task)
         if auto_fixes > 0:
             log.info(f"Auto-fixed {auto_fixes} deterministic error(s)")
             self._gate_stats["auto_fix"] += auto_fixes
-            # Sync snippet store with fixed files so assembly uses corrected code
             if self._project_mode:
                 self._refresh_snippets(task)
 
-        # Preventive AST guards — disabled by default (empirically harmful on 7B).
-        if self._config.cascade.defensive_guards:
-            guards = await self._watcher.inject_defensive_guards(task)
-            if guards > 0:
-                log.info(f"Injected {guards} defensive guard(s)")
-                self._gate_stats["defensive_guards"] = self._gate_stats.get("defensive_guards", 0) + guards
+    async def _run_defensive_guards(self, task: TaskNode) -> None:
+        """Preventive AST guards — disabled by default (empirically harmful on 7B)."""
+        if not self._config.cascade.defensive_guards:
+            return
+        guards = await self._watcher.inject_defensive_guards(task)
+        if guards > 0:
+            log.info(f"Injected {guards} defensive guard(s)")
+            self._gate_stats["defensive_guards"] = self._gate_stats.get("defensive_guards", 0) + guards
 
-        # Static analysis gate — catch syntax errors before wasting LLM tokens
+    async def _run_static_analysis_gate(self, task: TaskNode) -> None:
+        """Syntax + API-consistency check. Stores lint issues on task for review_phase."""
         blocking_errors, lint_info = await self._watcher.static_analysis_gate(task)
         if blocking_errors:
             log.warning(f"Syntax errors found: {blocking_errors}")
             self._gate_stats["syntax_errors"] += len(blocking_errors)
-            # Track interface inconsistency errors separately
             iface_errors = [e for e in blocking_errors if "attribute" in e and "method" in e]
             if iface_errors:
                 self._gate_stats["interface_inconsistency"] += len(iface_errors)
         if lint_info:
             log.info(f"Linter issues ({len(lint_info)}): {lint_info}")
             self._gate_stats["lint_issues"] += len(lint_info)
-        # Store lint issues on task so review_phase can feed them to fix cycle
         task._lint_issues = lint_info
 
-        # Spec-coverage gate — deterministic check for missing functions/classes
+    async def _run_spec_coverage_gate(self, task: TaskNode) -> None:
+        """Verify all spec names are defined. Stores missing names on task for review_phase."""
         missing_names = await self._watcher.spec_coverage_check(task)
         if missing_names:
             log.warning(
@@ -504,64 +528,65 @@ class Orchestrator:
                 f"not found in code: {missing_names}"
             )
             self._gate_stats["spec_coverage_gaps"] += len(missing_names)
-            # Inject missing-names context into the task spec so the review
-            # phase can feed it to the fix cycle
             task._missing_spec_names = missing_names
 
-        # Calibrate test assertions — fix LLM arithmetic errors in tests
-        if self._config.cascade.test_calibration:
-            calibrated = await self._watcher.calibrate_tests(task)
-            if calibrated > 0:
-                log.info(f"Calibrated {calibrated} test assertion(s)")
-                self._gate_stats["calibrations"] += calibrated
+    async def _run_test_calibration_gates(self, task: TaskNode) -> None:
+        """Conservative calibration + aggressive oracle repair of test assertions."""
+        if not self._config.cascade.test_calibration:
+            return
+        calibrated = await self._watcher.calibrate_tests(task)
+        if calibrated > 0:
+            log.info(f"Calibrated {calibrated} test assertion(s)")
+            self._gate_stats["calibrations"] += calibrated
 
-            # Oracle repair — aggressive second pass for remaining mismatches
-            oracle_repaired = await self._watcher.oracle_repair_tests(task)
-            if oracle_repaired > 0:
-                log.info(f"Oracle-repaired {oracle_repaired} test assertion(s)")
-                self._gate_stats["oracle_repairs"] += oracle_repaired
+        oracle_repaired = await self._watcher.oracle_repair_tests(task)
+        if oracle_repaired > 0:
+            log.info(f"Oracle-repaired {oracle_repaired} test assertion(s)")
+            self._gate_stats["oracle_repairs"] += oracle_repaired
 
-        # Mutation oracle — validate test quality via AST mutations
-        if self._config.cascade.mutation_oracle:
-            total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
-            if total > 0:
-                self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
-                self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
-                if kill_ratio < 0.5:
-                    warning = (
-                        f"Mutation oracle: only {killed}/{total} mutants killed "
-                        f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
-                    )
-                    log.warning(warning)
-                    task._mutation_oracle_warning = warning
+    async def _run_mutation_oracle_gate(self, task: TaskNode) -> None:
+        """Validate test quality via AST mutations."""
+        if not self._config.cascade.mutation_oracle:
+            return
+        total, killed, kill_ratio = await self._watcher.mutation_oracle(task)
+        if total == 0:
+            return
+        self._gate_stats["mutation_total"] = self._gate_stats.get("mutation_total", 0) + total
+        self._gate_stats["mutation_killed"] = self._gate_stats.get("mutation_killed", 0) + killed
+        if kill_ratio < 0.5:
+            warning = (
+                f"Mutation oracle: only {killed}/{total} mutants killed "
+                f"({kill_ratio:.0%}). Tests may contain hallucinated assertions."
+            )
+            log.warning(warning)
+            task._mutation_oracle_warning = warning
 
-        # 2. Review phase (LLM-based logic and style check)
-        task = await self.review_phase(task)
-
-        # After verification, generate edge case tests (informational, not blocking)
-        if task.is_complete and self._tester is not None:
-            try:
-                code_content = self._gather_code(task)
-                tests_content = self._gather_tests(task)
-                if code_content and tests_content:
-                    edge_files = await self._tester.generate_edge_cases(
-                        task, code_content, tests_content,
-                    )
-                    if edge_files:
-                        for cf in edge_files:
-                            self._file_manager.write_file(cf.path, cf.content)
-                        log.info(
-                            f"Generated {len(edge_files)} edge case test file(s) "
-                            f"for '{task.title}' (informational)"
-                        )
-            except Exception as exc:
-                log.warning(f"Edge case generation failed (non-blocking): {exc}")
-
-        # After verification, extract interface for sibling context
-        if task.is_complete and self._project_mode:
+    async def _run_post_verify_steps(self, task: TaskNode) -> None:
+        """Post-VERIFIED actions: edge case tests + interface extraction."""
+        await self._generate_edge_case_tests(task)
+        if self._project_mode:
             self._extract_and_attach_interface(task)
 
-        return task
+    async def _generate_edge_case_tests(self, task: TaskNode) -> None:
+        """Informational edge-case tests. Never blocks verification — failures logged only."""
+        if self._tester is None:
+            return
+        try:
+            code_content = self._gather_code(task)
+            tests_content = self._gather_tests(task)
+            if not (code_content and tests_content):
+                return
+            edge_files = await self._tester.generate_edge_cases(task, code_content, tests_content)
+            if not edge_files:
+                return
+            for cf in edge_files:
+                self._file_manager.write_file(cf.path, cf.content)
+            log.info(
+                f"Generated {len(edge_files)} edge case test file(s) "
+                f"for '{task.title}' (informational)"
+            )
+        except Exception as exc:
+            log.warning(f"Edge case generation failed (non-blocking): {exc}")
 
     def _refresh_snippets(self, task: TaskNode) -> None:
         """Re-read code files from disk into the snippet store and task node."""
