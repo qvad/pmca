@@ -1464,31 +1464,62 @@ class Orchestrator:
         return fixes_applied
 
     async def integrate_phase(self, task: TaskNode) -> TaskNode:
-        """Verify all children work together after they complete."""
+        """Verify all children work together after they complete.
+
+        Pipeline:
+          1. readiness gate — all children must complete (project mode allows partial)
+          2. transition to INTEGRATING, emit PHASE_START
+          3. project-mode snippet assembly (if any snippets were stored)
+          4. integration strategy:
+               - project mode → deterministic collect + run integration tests
+               - single-file mode → LLM integration review
+        """
         log.info(f"[yellow]INTEGRATE[/yellow] phase for: {task.title}")
 
-        if not self._task_tree.all_children_complete(task.id):
-            failed = self._task_tree.get_failed_children(task.id)
-            if not self._project_mode:
-                log.error(f"Cannot integrate — {len(failed)} children failed")
-                task.status = TaskStatus.FAILED
-                task.updated_at = _now()
-                self._save_state()
-                return task
-            # Project mode: partial integration with verified children
-            verified = [
-                c for c in self._task_tree.get_children(task.id)
-                if c.status == TaskStatus.VERIFIED
-            ]
-            log.warning(
-                f"Partial integration: {len(failed)} failed, "
-                f"{len(verified)} verified"
-            )
+        if not self._children_ready_for_integration(task):
+            return task
 
+        self._begin_integrate_phase(task)
+        if self._project_mode and self._snippet_store:
+            self._assemble_snippets(task)
+
+        children = self._task_tree.get_children(task.id)
+        if self._project_mode:
+            await self._integrate_project_mode(task, children)
+        else:
+            await self._integrate_single_file_mode(task, children)
+
+        self._save_state()
+        return task
+
+    def _children_ready_for_integration(self, task: TaskNode) -> bool:
+        """True if integration can proceed. Marks task FAILED + returns False otherwise."""
+        if self._task_tree.all_children_complete(task.id):
+            return True
+
+        failed = self._task_tree.get_failed_children(task.id)
+        if not self._project_mode:
+            log.error(f"Cannot integrate — {len(failed)} children failed")
+            task.status = TaskStatus.FAILED
+            task.updated_at = _now()
+            self._save_state()
+            return False
+
+        # Project mode: tolerate partial integration.
+        verified = [
+            c for c in self._task_tree.get_children(task.id)
+            if c.status == TaskStatus.VERIFIED
+        ]
+        log.warning(
+            f"Partial integration: {len(failed)} failed, {len(verified)} verified"
+        )
+        return True
+
+    def _begin_integrate_phase(self, task: TaskNode) -> None:
+        """Transition to INTEGRATING and emit PHASE_START."""
         task.status = TaskStatus.INTEGRATING
         task.updated_at = _now()
         self._save_state()
-
         self._emit(CascadeEvent(
             event_type=EventType.PHASE_START,
             task_title=task.title,
@@ -1497,89 +1528,84 @@ class Orchestrator:
             message=f"Integrating: {task.title}",
         ))
 
-        # In project mode, assemble snippets into final files
-        if self._project_mode and self._snippet_store:
-            assembler = FileAssembler(self._file_manager)
-            assembled = assembler.assemble(
-                task, self._task_tree, self._snippet_store,
-            )
-            log.info(f"Assembled {len(assembled)} file(s) for '{task.title}'")
+    def _assemble_snippets(self, task: TaskNode) -> None:
+        """Assemble per-child code snippets into final files (project mode only)."""
+        assembler = FileAssembler(self._file_manager)
+        assembled = assembler.assemble(task, self._task_tree, self._snippet_store)
+        log.info(f"Assembled {len(assembled)} file(s) for '{task.title}'")
 
-        children = self._task_tree.get_children(task.id)
+    async def _integrate_project_mode(
+        self, task: TaskNode, children: list[TaskNode],
+    ) -> None:
+        """Deterministic integration: collect files, run tests, mark VERIFIED.
 
-        # In project mode, skip LLM integration review — each child is
-        # independently verified, assembly is deterministic, and the 7B
-        # reviewer is too conservative with partial integration.
-        # Run integration tests instead if test files exist.
-        if self._project_mode:
-            verified = [c for c in children if c.status == TaskStatus.VERIFIED]
-            log.info(
-                f"Project mode: skipping LLM integration review "
-                f"({len(verified)}/{len(children)} children verified)"
-            )
+        Skips LLM review entirely — each child was independently verified,
+        assembly is deterministic, and the 7B reviewer is too conservative
+        with partial integration.
+        """
+        verified = [c for c in children if c.status == TaskStatus.VERIFIED]
+        log.info(
+            f"Project mode: skipping LLM integration review "
+            f"({len(verified)}/{len(children)} children verified)"
+        )
+        self._collect_child_files(task, children)
 
-            # Collect all child files
-            seen: set[str] = set()
-            for child in children:
-                for f_path, f_content in child.code_files.items():
-                    if f_path not in seen:
-                        task.code_files[f_path] = f_content
-                        seen.add(f_path)
-                for f_path, f_content in child.test_files.items():
-                    if f_path not in seen:
-                        task.test_files[f_path] = f_content
-                        seen.add(f_path)
-
-            # Run all collected tests as integration check
-            if task.test_files:
-                test_result = await self._watcher.run_tests(task)
-                if test_result.passed:
-                    log.info(f"Integration tests passed ({test_result.total} tests)")
-                else:
-                    log.warning(
-                        f"Integration tests: {test_result.failures}/{test_result.total} "
-                        f"failed (non-blocking in project mode)"
-                    )
-
-            task.transition(TaskStatus.VERIFIED)
-            if self._config.workspace.git_checkpoint:
-                commit_hash = self._git_manager.checkpoint(task, "integration verified")
-                task.git_checkpoint = commit_hash
-            log.info(f"Integration complete for '{task.title}'")
-        else:
-            # Single-file mode: use LLM integration review
-            children_summary = "\n\n".join(
-                f"### {c.title}\nStatus: {c.status.value}\nSpec: {c.spec[:500]}\n"
-                f"Files: {', '.join(c.code_files)}"
-                for c in children
-            )
-
-            review = await self._reviewer.verify_integration(task, children_summary)
-            task.review_history.append(review)
-
-            if review.passed:
-                task.transition(TaskStatus.VERIFIED)
-                if self._config.workspace.git_checkpoint:
-                    commit_hash = self._git_manager.checkpoint(task, "integration verified")
-                    task.git_checkpoint = commit_hash
-                seen: set[str] = set()
-                for child in children:
-                    for f_path, f_content in child.code_files.items():
-                        if f_path not in seen:
-                            task.code_files[f_path] = f_content
-                            seen.add(f_path)
-                    for f_path, f_content in child.test_files.items():
-                        if f_path not in seen:
-                            task.test_files[f_path] = f_content
-                            seen.add(f_path)
-                log.info(f"Integration verified for '{task.title}'")
+        if task.test_files:
+            test_result = await self._watcher.run_tests(task)
+            if test_result.passed:
+                log.info(f"Integration tests passed ({test_result.total} tests)")
             else:
-                log.error(f"Integration failed for '{task.title}': {review.issues}")
-                task.status = TaskStatus.FAILED
-                task.updated_at = _now()
+                log.warning(
+                    f"Integration tests: {test_result.failures}/{test_result.total} "
+                    f"failed (non-blocking in project mode)"
+                )
 
-        self._save_state()
-        return task
+        task.transition(TaskStatus.VERIFIED)
+        self._checkpoint_if_enabled(task)
+        log.info(f"Integration complete for '{task.title}'")
+
+    async def _integrate_single_file_mode(
+        self, task: TaskNode, children: list[TaskNode],
+    ) -> None:
+        """LLM-based integration review. Marks task VERIFIED or FAILED."""
+        children_summary = "\n\n".join(
+            f"### {c.title}\nStatus: {c.status.value}\nSpec: {c.spec[:500]}\n"
+            f"Files: {', '.join(c.code_files)}"
+            for c in children
+        )
+        review = await self._reviewer.verify_integration(task, children_summary)
+        task.review_history.append(review)
+
+        if not review.passed:
+            log.error(f"Integration failed for '{task.title}': {review.issues}")
+            task.status = TaskStatus.FAILED
+            task.updated_at = _now()
+            return
+
+        task.transition(TaskStatus.VERIFIED)
+        self._checkpoint_if_enabled(task)
+        self._collect_child_files(task, children)
+        log.info(f"Integration verified for '{task.title}'")
+
+    def _collect_child_files(
+        self, task: TaskNode, children: list[TaskNode],
+    ) -> None:
+        """Merge child code+test files into parent task, preserving first-seen ownership."""
+        seen: set[str] = set()
+        for child in children:
+            for f_path, f_content in child.code_files.items():
+                if f_path not in seen:
+                    task.code_files[f_path] = f_content
+                    seen.add(f_path)
+            for f_path, f_content in child.test_files.items():
+                if f_path not in seen:
+                    task.test_files[f_path] = f_content
+                    seen.add(f_path)
+
+    def _checkpoint_if_enabled(self, task: TaskNode) -> None:
+        """Create a git checkpoint commit when workspace.git_checkpoint is on."""
+        if self._config.workspace.git_checkpoint:
+            task.git_checkpoint = self._git_manager.checkpoint(task, "integration verified")
 
     @staticmethod
     def _sort_by_dependencies(children: list[TaskNode]) -> list[TaskNode]:
