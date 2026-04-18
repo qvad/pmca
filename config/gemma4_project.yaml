@@ -1,0 +1,55 @@
+# PMCA config for Gemma 4 — PROJECT MODE (multi-file)
+# For complex tasks that need multiple modules.
+
+models:
+  architect:
+    name: "gemma4-e4b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.3
+  coder:
+    name: "gemma4-e4b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.2
+  reviewer:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+  watcher:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+
+cascade:
+  max_depth: 2           # Enable multi-file project mode
+  max_retries: 3
+  max_children: 5        # Up to 5 files per project
+  leaf_threshold: "function"
+  best_of_n: 1
+  fresh_start_after: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+  spec_literals: true
+  quality_standards: |
+    Production Code Standards (MANDATORY):
+    1. Use EXACT filenames from the user request. If user says "api_client", the file MUST be api_client.py
+    2. Use @dataclass or typed classes for domain objects
+    3. Separate concerns: models in models.py, logic in separate modules, CLI in cli.py
+    4. Each module should be independently importable
+    5. Use dependency injection — pass dependencies as constructor args, not globals
+    6. Full type annotations on all public methods
+    7. Validate inputs at public API boundaries
+    8. Raise descriptive errors (ValueError, TypeError, KeyError) with messages
+    9. Use SIMPLE patterns only — NO metaclasses, NO descriptors, NO __init_subclass__. Use regular class inheritance and explicit registration instead
+    10. For ORM patterns: use a simple dict-based registry, not metaclass magic
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

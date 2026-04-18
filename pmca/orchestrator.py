@@ -458,9 +458,8 @@ class Orchestrator:
             ))
 
             # Review each child spec against parent
-            # Skip in project mode — the decomposition prompt already produces
-            # well-structured specs and the 7B reviewer is unreliable here
-            if not self._project_mode:
+            # Skip in project mode and when LLM reviewer is disabled
+            if not self._project_mode and self._config.cascade.use_llm_reviewer:
                 await self._review_child_specs(task, think=think_mode)
         else:
             # Leaf — move directly to coding

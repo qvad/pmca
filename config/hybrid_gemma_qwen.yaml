@@ -1,0 +1,55 @@
+# Hybrid config: Gemma 4 architect + Qwen 3.5 coder
+# Gemma 4 designs the spec (good at instruction following),
+# Qwen 3.5 implements (good at complex code generation).
+# Both fit on a 16GB GPU (swap models between phases).
+
+models:
+  architect:
+    name: "gemma4-e4b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.3
+  coder:
+    name: "qwen3.5-coder"
+    provider: "ollama"
+    context_window: 16384
+    temperature: 0.2
+    think: false
+  reviewer:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+  watcher:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+  best_of_n: 1
+  fresh_start_after: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+  use_llm_reviewer: false        # Gemma 4 reviewer too strict — loops on complex specs
+  spec_literals: true
+  quality_standards: |
+    Production Code Standards (MANDATORY):
+    1. Use EXACT filenames from the user request
+    2. Use @dataclass or typed classes for domain objects
+    3. Full type annotations on all public methods
+    4. Validate inputs at public API boundaries
+    5. Raise descriptive errors with messages
+    6. Use SIMPLE patterns — no metaclasses
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
