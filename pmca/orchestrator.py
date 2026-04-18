@@ -154,6 +154,7 @@ class Orchestrator:
             self._model_manager,
             max_children=config.cascade.max_children,
             project_mode=self._project_mode,
+            quality_standards=config.cascade.quality_standards,
         )
         self._coder = CoderAgent(self._model_manager, project_mode=self._project_mode)
         self._reviewer = ReviewerAgent(self._model_manager)

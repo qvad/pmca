@@ -8,24 +8,45 @@ import uuid
 from pydantic import BaseModel, Field
 
 
+class ToolFunction(BaseModel):
+    name: str
+    arguments: str  # JSON-encoded string
+
+
+class ToolCall(BaseModel):
+    id: str
+    type: str = "function"
+    function: ToolFunction
+
+
 class ChatMessage(BaseModel):
     role: str = "user"
     content: str | None = None
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
     model: str = "pmca"
-    messages: list[ChatMessage]
+    messages: list[ChatMessage] = []
     temperature: float | None = None
     max_tokens: int | None = None
     stream: bool = False
-    # Accept and ignore other OpenAI params
+    # Accept and ignore — opencode sends these but PMCA handles tools internally
+    tools: list | None = None
+    tool_choice: str | dict | None = None
+    # Accept and ignore opencode/crush-specific params
+    max_completion_tokens: int | None = None
+    reasoning_effort: str | None = None
+    stream_options: dict | None = None
     top_p: float | None = None
     n: int | None = None
     stop: str | list[str] | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
     user: str | None = None
+
+    model_config = {"extra": "ignore"}
 
 
 class UsageInfo(BaseModel):

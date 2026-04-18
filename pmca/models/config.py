@@ -56,6 +56,7 @@ class CascadeConfig:
     lesson_injection: bool = True   # Inject LessonRecords into fix prompts
     spec_literals: bool = True      # Extract string literals from spec before coding
     test_triage: bool = True        # Per-failure investigation cascade (diagnose → fix → verify)
+    quality_standards: str = ""     # Injected into architect spec for production-quality output
 
 
 @dataclass

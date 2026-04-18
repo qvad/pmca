@@ -22,10 +22,12 @@ class ArchitectAgent(BaseAgent):
         model_manager: ModelManager,
         max_children: int = 6,
         project_mode: bool = False,
+        quality_standards: str = "",
     ) -> None:
         super().__init__(model_manager)
         self._max_children = max_children
         self._project_mode = project_mode
+        self._quality_standards = quality_standards
 
     def _get_system_prompt(self, role: AgentRole | None = None) -> str:
         """Construct system prompt, injecting Architect skills."""
@@ -41,6 +43,8 @@ class ArchitectAgent(BaseAgent):
             task_title=task.title,
             context=context,
         )
+        if self._quality_standards:
+            prompt += f"\n\n## Quality Standards\n{self._quality_standards}\n"
         system = self._get_system_prompt()
         response = await self._generate(prompt, system=system, think=think)
         return response.strip()

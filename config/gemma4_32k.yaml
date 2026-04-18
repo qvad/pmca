@@ -1,0 +1,51 @@
+# PMCA config for Gemma 4 with 32K context — for complex multi-file tasks
+
+models:
+  architect:
+    name: "gemma4-e4b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.3
+  coder:
+    name: "gemma4-e4b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.2
+  reviewer:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+  watcher:
+    name: "gemma4-e2b-32k"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+  best_of_n: 1
+  fresh_start_after: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+  spec_literals: true
+  quality_standards: |
+    Production Code Standards (MANDATORY):
+    1. Use @dataclass or typed classes for domain objects
+    2. Return defensive copies from getters
+    3. Implement ALL sort/filter modes implied by the domain
+    4. Add get_by_id() lookup method when IDs exist
+    5. Validate inputs at public API boundaries
+    6. Raise ValueError for invalid arguments
+    7. Full type annotations on all public methods
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"

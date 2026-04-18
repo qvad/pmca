@@ -1,0 +1,56 @@
+# PMCA config for Gemma 4 — QUALITY MODE
+# Injects coding standards into the architect spec for production-quality output.
+
+models:
+  architect:
+    name: "gemma4:e4b"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.3
+  coder:
+    name: "gemma4:e4b"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.2
+  reviewer:
+    name: "gemma4:e2b"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+  watcher:
+    name: "gemma4:e2b"
+    provider: "ollama"
+    context_window: 32768
+    temperature: 0.1
+
+cascade:
+  max_depth: 1
+  max_retries: 3
+  max_children: 3
+  leaf_threshold: "function"
+  best_of_n: 1
+  fresh_start_after: 2
+  runtime_fixes: true
+  reviewer_bypass_on_pass: true
+  spec_literals: true
+  # Quality standards injected into every architect spec
+  quality_standards: |
+    Production Code Standards (MANDATORY — follow ALL of these):
+    1. Use @dataclass for domain objects (e.g. Task), NOT raw dicts. Each domain object must be its own class with typed fields.
+    2. Return defensive copies (list(...) or copy) from getters — never expose mutable internal references.
+    3. Implement ALL sort modes implied by the domain: priority, due_date, created_at. Handle None values in sort keys by placing them last.
+    4. Add a get_by_id(id) -> T | None method for O(1) lookup when the domain has unique IDs.
+    5. Add a delete(id) -> bool method for removing items from mutable collections.
+    6. Validate inputs at public API boundaries: raise TypeError for wrong types, ValueError for invalid values (e.g. empty title, negative ID).
+    7. Use __slots__ on dataclasses for memory efficiency.
+    8. Every public method must have full type annotations on all parameters and return type.
+    9. Raise ValueError with a clear message for invalid sort_by values instead of silently returning unsorted results.
+    10. Implement __len__ and __contains__ dunder methods on collection managers.
+
+workspace:
+  path: "./workspace"
+  git_checkpoint: false
+
+logging:
+  level: "INFO"
+  file: "./pmca.log"
