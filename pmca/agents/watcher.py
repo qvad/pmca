@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pmca.agents.base import BaseAgent
 from pmca.models.config import AgentRole, CascadeConfig, LintConfig
+from pmca.models.manager import ModelManager
 from pmca.prompts import watcher as prompts
 from pmca.tasks.state import LessonRecord, ReviewResult, TestResult
 from pmca.tasks.tree import TaskNode
@@ -199,8 +200,13 @@ class _UsageVisitor(ast.NodeVisitor):
 class WatcherAgent(BaseAgent):
     role = AgentRole.WATCHER
 
-    def __init__(self, model_manager, workspace_path=None, lint_config: LintConfig | None = None,
-                 cascade_config: CascadeConfig | None = None) -> None:
+    def __init__(
+        self,
+        model_manager: ModelManager,
+        workspace_path: Path | str | None = None,
+        lint_config: LintConfig | None = None,
+        cascade_config: CascadeConfig | None = None,
+    ) -> None:
         super().__init__(model_manager)
         self._workspace_path = workspace_path
         self._lint_config = lint_config

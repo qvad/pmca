@@ -4,10 +4,12 @@ import hashlib
 import json
 import re
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 
 from pmca.agents.base import BaseAgent
 from pmca.models.config import AgentRole
+from pmca.models.manager import ModelManager
 from pmca.prompts import coder as prompts
 from pmca.tasks.state import CodeFile
 from pmca.tasks.tree import TaskNode
@@ -18,7 +20,7 @@ _TARGET_FILE_RE = re.compile(r"TARGET_FILE:\s*(\S+)")
 class CoderAgent(BaseAgent):
     role = AgentRole.CODER
 
-    def __init__(self, model_manager, project_mode: bool = False) -> None:
+    def __init__(self, model_manager: ModelManager, project_mode: bool = False) -> None:
         super().__init__(model_manager)
         self._project_mode = project_mode
         # Track code hashes per task to detect duplicate fix attempts
@@ -51,8 +53,8 @@ class CoderAgent(BaseAgent):
                         system += QWEN_PYTHON_SKILLS
                     if prompts.THINKING_PROMPT_PREFIX not in system:
                         system += "\n" + prompts.THINKING_PROMPT_PREFIX
-            except Exception:
-                pass
+            except (AttributeError, KeyError):
+                pass  # Model config unavailable — skip skill injection
 
         if self._project_mode:
             system += prompts.PROJECT_IMPORT_RULES
@@ -194,7 +196,8 @@ class CoderAgent(BaseAgent):
         return self._parse_code_blocks(response)
 
     async def implement_best_of_n(
-        self, task: TaskNode, context: str, n: int, test_runner,
+        self, task: TaskNode, context: str, n: int,
+        test_runner: Callable,
         tests_content: str = "",
         cross_execution: bool = False,
     ) -> list[CodeFile]:

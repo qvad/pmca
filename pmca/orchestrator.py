@@ -82,6 +82,11 @@ class _TriageContext:
     test_function: str
 
 
+def _is_test_file(path: str) -> bool:
+    """True when the file path looks like a test file."""
+    return path.startswith("test") or "/test_" in path
+
+
 # --- Task profile keyword sets (used by Orchestrator._estimate_task_profile) ---
 
 _DIFFICULTY_KEYWORDS: frozenset[str] = frozenset({
@@ -861,7 +866,7 @@ class Orchestrator:
             old_code_files = list(task.code_files)
             task.code_files = [
                 cf.path for cf in candidate_files
-                if not (cf.path.startswith("test") or "/test_" in cf.path)
+                if not _is_test_file(cf.path)
             ]
             result = await self._watcher.run_tests(task)
             task.code_files = old_code_files
@@ -889,7 +894,7 @@ class Orchestrator:
         """Write files, attach to task, emit CODE_GENERATED, save state."""
         for cf in code_files:
             self._file_manager.write_file(cf.path, cf.content)
-            if cf.path.startswith("test") or "/test_" in cf.path:
+            if _is_test_file(cf.path):
                 task.test_files[cf.path] = cf.content
             else:
                 task.code_files[cf.path] = cf.content
@@ -1197,7 +1202,7 @@ class Orchestrator:
         new_tests = dict(task.test_files)
         for cf in code_files:
             self._file_manager.write_file(cf.path, cf.content)
-            if cf.path.startswith("test") or "/test_" in cf.path:
+            if _is_test_file(cf.path):
                 new_tests[cf.path] = cf.content
             else:
                 new_code[cf.path] = cf.content

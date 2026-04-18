@@ -38,7 +38,7 @@ class BaseAgent(ABC):
 
         # Inject Qwen persona if applicable
         model_cfg = self._model._config.get_model(effective_role)
-        if "qwen3.5" in model_cfg.name.lower():
+        if model_cfg and "qwen3.5" in model_cfg.name.lower():
             from pmca.prompts.qwen_python_skills import QWEN_PERSONA
             if QWEN_PERSONA not in system:
                 system = QWEN_PERSONA + "\n\n" + system
