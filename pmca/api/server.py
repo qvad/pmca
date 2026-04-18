@@ -1,6 +1,6 @@
 """FastAPI application — OpenAI-compatible API server for PMCA.
 
-Three request routing modes:
+Four request routing modes:
   1. **Tool result ack** — opencode sends tool execution results back;
      respond immediately without triggering a cascade.
   2. **Lightweight pass-through** — title/summarizer requests forwarded
@@ -170,7 +170,12 @@ def _make_chunk(
 def _make_tool_call_chunk(
     chunk_id: str, model: str, idx: int, tc: ToolCall,
 ) -> str:
-    """Build an SSE chunk carrying one tool_call delta."""
+    """Build an SSE chunk carrying one tool_call delta.
+
+    Uses raw dicts because DeltaMessage doesn't model tool_calls —
+    OpenAI's streaming tool_call format is structurally different from
+    content deltas.
+    """
     chunk = {
         "id": chunk_id,
         "object": "chat.completion.chunk",
@@ -302,6 +307,7 @@ def create_app(
 
         # 3. Agent mode: cascade → streaming tool_calls
         if _has_tools(raw):
+            # Pre-check is a courtesy — the generator acquires the lock properly.
             if _cascade_lock.locked():
                 raise HTTPException(429, "Cascade already running")
             return StreamingResponse(
@@ -453,7 +459,7 @@ async def _stream_cascade_direct(
             try:
                 await orchestrator.run(user_message)
             except Exception:
-                pass
+                log.exception("Cascade failed in streaming mode")
             finally:
                 bus.finish()
 
