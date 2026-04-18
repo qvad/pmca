@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import heapq
+import json as _json
 import re
 from collections import defaultdict
 from collections.abc import Callable
@@ -1473,7 +1475,6 @@ class Orchestrator:
 
         Defaults to ('code_wrong', raw) when JSON cannot be parsed.
         """
-        import json as _json
         try:
             json_match = re.search(r"\{[^}]+\}", raw, re.DOTALL)
             if not json_match:
@@ -1716,7 +1717,6 @@ class Orchestrator:
                         in_degree[idx] += 1
 
         # Kahn's algorithm with heap for stable ordering
-        import heapq
         queue = [i for i in range(len(children)) if in_degree[i] == 0]
         heapq.heapify(queue)
         sorted_indices: list[int] = []

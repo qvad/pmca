@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from abc import ABC
+from pathlib import PurePosixPath
 
 from pmca.models.config import AgentRole
 from pmca.models.manager import ModelManager
@@ -133,7 +135,6 @@ class BaseAgent(ABC):
     @staticmethod
     def _build_rename_map(files: list[CodeFile]) -> dict[str, str]:
         """Return {old_stem: new_stem} for files where stem mismatches primary class."""
-        from pathlib import PurePosixPath
         rename_map: dict[str, str] = {}
         for f in files:
             p = PurePosixPath(f.path)
@@ -153,7 +154,6 @@ class BaseAgent(ABC):
     @staticmethod
     def _primary_public_class(source: str) -> str | None:
         """Return the first top-level non-underscore class name, or None."""
-        import ast
         try:
             tree = ast.parse(source)
         except SyntaxError:
@@ -166,7 +166,6 @@ class BaseAgent(ABC):
     @staticmethod
     def _apply_rename(f: CodeFile, rename_map: dict[str, str]) -> CodeFile:
         """Rewrite path and import statements for one CodeFile using ``rename_map``."""
-        from pathlib import PurePosixPath
         p = PurePosixPath(f.path)
         new_path = f.path
         if p.suffix == ".py":

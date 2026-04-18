@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import warnings
+from pathlib import Path
 
 from pmca.agents.base import BaseAgent
 from pmca.models.config import AgentRole
@@ -67,7 +68,6 @@ class CoderAgent(BaseAgent):
         if m:
             from pmca.utils.assembler import _normalize_target_path
             target = _normalize_target_path(m.group(1))
-            from pathlib import Path
             p = Path(target)
             # Force extension if it doesn't match the language
             if p.suffix != ext:

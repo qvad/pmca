@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from pmca.tasks.state import TaskStatus
 from pmca.tasks.tree import TaskNode, TaskTree
@@ -165,7 +166,6 @@ class ContextManager:
             return ""
 
         # Load from knowledge base
-        from pathlib import Path
         kb_path = Path(__file__).parent.parent / "knowledge_base" / "patterns.md"
         if not kb_path.exists():
             return ""

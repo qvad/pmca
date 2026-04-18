@@ -351,9 +351,7 @@ class ModelManager:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():
                     if line.strip():
-                        import json
-
-                        data = json.loads(line)
+                        data = _json.loads(line)
                         status = data.get("status", "")
                         if "completed" in data and "total" in data:
                             pct = int(data["completed"] / data["total"] * 100)

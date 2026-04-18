@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -138,7 +139,6 @@ async def ruff_autofix(file_path: Path, workspace: Path) -> int:
 
     output = stdout.decode()
     # ruff reports "Found N errors (M fixed, K remaining)."
-    import re
     m = re.search(r"\((\d+) fixed", output)
     fixed = int(m.group(1)) if m else 0
     if fixed > 0:
