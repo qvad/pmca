@@ -208,9 +208,15 @@ class WatcherAgent(BaseAgent):
         cascade_config: CascadeConfig | None = None,
     ) -> None:
         super().__init__(model_manager)
-        self._workspace_path = workspace_path
+        self._workspace_path: Path | None = Path(workspace_path) if workspace_path else None
         self._lint_config = lint_config
         self._cascade = cascade_config or CascadeConfig()
+
+    @property
+    def _ws(self) -> Path:
+        """Non-None workspace path. Only call after checking ``self._workspace_path``."""
+        assert self._workspace_path is not None  # caller must guard
+        return self._workspace_path
 
     def _get_system_prompt(self) -> str:
         """Construct system prompt with Watcher SOP."""
@@ -539,7 +545,7 @@ class WatcherAgent(BaseAgent):
         if not task.code_files or not self._workspace_path:
             return 0
 
-        ws = Path(self._workspace_path)
+        ws = self._ws
         fixes = 0
 
         if self._cascade.import_fixes:
@@ -647,10 +653,10 @@ class WatcherAgent(BaseAgent):
                 python_exe, "-c", f"import {module_path}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=self._workspace_path,
+                cwd=str(self._ws),
                 env={
                     **os.environ,
-                    "PYTHONPATH": _build_pythonpath(self._workspace_path),
+                    "PYTHONPATH": _build_pythonpath(self._ws),
                 },
             )
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
@@ -1035,7 +1041,7 @@ class WatcherAgent(BaseAgent):
         if not task.code_files or not self._workspace_path:
             return 0
 
-        ws = Path(self._workspace_path)
+        ws = self._ws
         total = 0
         for code_file in task.code_files:
             file_path = ws / code_file
@@ -1264,7 +1270,7 @@ class WatcherAgent(BaseAgent):
         if not task.code_files or not self._workspace_path:
             return 0
 
-        ws = Path(self._workspace_path)
+        ws = self._ws
         total = 0
         for error in structured_errors:
             for code_file in task.code_files:
@@ -1425,8 +1431,10 @@ class WatcherAgent(BaseAgent):
         for path in all_paths:
             if not path.endswith(".py"):
                 continue
-            full_path = Path(self._workspace_path) / path if self._workspace_path else None
-            if full_path is None or not full_path.exists():
+            if not self._workspace_path:
+                continue
+            full_path = self._ws / path
+            if not full_path.exists():
                 continue
             code = full_path.read_text()
             try:
@@ -1442,19 +1450,19 @@ class WatcherAgent(BaseAgent):
             for path in all_paths:
                 if not path.endswith(".py"):
                     continue
-                full_path = Path(self._workspace_path) / path
+                full_path = self._ws / path
                 if not full_path.exists():
                     continue
                 if self._lint_config.mypy:
-                    mypy_errors = await run_mypy(full_path, self._workspace_path)
+                    mypy_errors = await run_mypy(full_path, self._ws)
                     informational.extend(mypy_errors)
                 if self._lint_config.ruff:
-                    ruff_errors = await run_ruff(full_path, self._workspace_path)
+                    ruff_errors = await run_ruff(full_path, self._ws)
                     informational.extend(ruff_errors)
 
         # API consistency lint — detect attribute/method shadowing
         if self._workspace_path:
-            api_errors = self._check_api_consistency(Path(self._workspace_path))
+            api_errors = self._check_api_consistency(self._ws)
             blocking.extend(api_errors)
 
         return blocking, informational
@@ -1564,7 +1572,7 @@ class WatcherAgent(BaseAgent):
         lang = detect_language(task)
         ext = get_extension(lang)
 
-        ws = Path(self._workspace_path)
+        ws = self._ws
         scan_files = [
             f for f in ws.rglob(f"*{ext}")
             if "__pycache__" not in str(f) and ".pmca" not in str(f)
@@ -1628,7 +1636,7 @@ class WatcherAgent(BaseAgent):
     async def _run_go_tests(self, task: TaskNode) -> TestResult:
         """Execute Go tests using 'go test'."""
         try:
-            ws_abs = Path(self._workspace_path).resolve()
+            ws_abs = self._ws.resolve()
             # Ensure go.mod exists
             go_mod = ws_abs / "go.mod"
             if not go_mod.exists():
@@ -1654,7 +1662,7 @@ class WatcherAgent(BaseAgent):
     async def _run_ts_tests(self, task: TaskNode) -> TestResult:
         """Execute TypeScript tests using ts-node or basic node execution."""
         try:
-            ws_abs = Path(self._workspace_path).resolve()
+            ws_abs = self._ws.resolve()
             # 1. First, ensure dependencies are somewhat sane (minimal check)
             # 2. Try to run any test files found using ts-node
             test_files = [f for f in task.test_files if f.endswith(".ts")]
@@ -1687,7 +1695,7 @@ class WatcherAgent(BaseAgent):
 
         python_exe = self._find_python()
         try:
-            ws_abs = Path(self._workspace_path).resolve()
+            ws_abs = self._ws.resolve()
             proc = await asyncio.create_subprocess_exec(
                 python_exe, "-m", "pytest", *py_tests,
                 "-v", "--tb=long", "--showlocals", "--no-header",
@@ -1695,7 +1703,7 @@ class WatcherAgent(BaseAgent):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(ws_abs),
-                env={**__import__("os").environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
+                env={**os.environ, "PYTHONPATH": _build_pythonpath(self._ws)},
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
             output = stdout.decode() + stderr.decode()
@@ -1989,7 +1997,7 @@ class WatcherAgent(BaseAgent):
         if not candidates:
             return 0
 
-        workspace = Path(self._workspace_path)
+        workspace = self._ws
         code_files = [f for f in task.code_files if not f.startswith("test")]
 
         fixed_count = 0
@@ -2117,7 +2125,7 @@ class WatcherAgent(BaseAgent):
         python_exe = self._find_python()
         calibrated = 0
         for test_file in py_tests:
-            test_path = Path(self._workspace_path) / test_file
+            test_path = self._ws / test_file
             if not test_path.exists():
                 continue
             output = await self._run_pytest_for_calibration(test_file, python_exe)
@@ -2131,7 +2139,7 @@ class WatcherAgent(BaseAgent):
     ) -> str | None:
         """Run pytest on one file. Returns combined stdout+stderr, or None when nothing to do."""
         try:
-            ws_abs = Path(self._workspace_path).resolve()
+            ws_abs = self._ws.resolve()
             proc = await asyncio.create_subprocess_exec(
                 python_exe, "-m", "pytest", test_file,
                 "-v", "--tb=long", "--showlocals", "--no-header",
@@ -2139,7 +2147,7 @@ class WatcherAgent(BaseAgent):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(ws_abs),
-                env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
+                env={**os.environ, "PYTHONPATH": _build_pythonpath(self._ws)},
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         except (TimeoutError, FileNotFoundError):
@@ -2288,7 +2296,7 @@ class WatcherAgent(BaseAgent):
         python_exe = self._find_python()
         repaired = 0
         for test_file in py_tests:
-            test_path = Path(self._workspace_path) / test_file
+            test_path = self._ws / test_file
             if not test_path.exists():
                 continue
             # Reuse pytest runner from calibrate; same CLI flags suffice.
@@ -2390,7 +2398,7 @@ class WatcherAgent(BaseAgent):
             return 0, 0, 0.0
 
         python_exe = self._find_python()
-        ws_abs = Path(self._workspace_path).resolve()
+        ws_abs = self._ws.resolve()
         total = 0
         killed = 0
 
@@ -2417,7 +2425,7 @@ class WatcherAgent(BaseAgent):
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                         cwd=str(ws_abs),
-                        env={**os.environ, "PYTHONPATH": _build_pythonpath(self._workspace_path)},
+                        env={**os.environ, "PYTHONPATH": _build_pythonpath(self._ws)},
                     )
                     try:
                         await asyncio.wait_for(proc.communicate(), timeout=5)

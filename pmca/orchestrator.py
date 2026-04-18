@@ -996,7 +996,7 @@ class Orchestrator:
 
     async def _review_passing_code(self, task: TaskNode, code_content: str) -> ReviewResult:
         """Tests pass. Invoke reviewer (or bypass it) and enforce spec-coverage gate."""
-        missing_names = getattr(task, "_missing_spec_names", [])
+        missing_names = task._missing_spec_names
         spec_for_review = self._spec_with_missing_names(task.spec, missing_names)
 
         if self._should_bypass_reviewer(missing_names):
@@ -1072,7 +1072,7 @@ class Orchestrator:
         """Append lint issues to a failed review so the coder fixes them alongside review issues."""
         if review.passed:
             return review
-        lint_issues = getattr(task, "_lint_issues", [])
+        lint_issues = task._lint_issues
         if not lint_issues:
             return review
         return ReviewResult(
@@ -1101,7 +1101,7 @@ class Orchestrator:
                 f"({[e.error_type for e in structured_errors]})"
             )
             structured_issues = [e.format_for_prompt() for e in structured_errors]
-            lint_issues = getattr(task, "_lint_issues", [])
+            lint_issues = task._lint_issues
             if lint_issues:
                 structured_issues += [f"[lint] {e}" for e in lint_issues]
             return ReviewResult(
@@ -1135,7 +1135,7 @@ class Orchestrator:
                 structured_issues = analysis.specific_issues
 
         combined_issues = review.issues + structured_issues
-        lint_issues = getattr(task, "_lint_issues", [])
+        lint_issues = task._lint_issues
         if lint_issues:
             combined_issues += [f"[lint] {e}" for e in lint_issues]
 
@@ -1188,8 +1188,8 @@ class Orchestrator:
     async def _regenerate_from_scratch(self, task: TaskNode) -> None:
         log.info("Fresh start — regenerating from scratch")
         context = self._context_manager.build_context(task)
-        fresh_role = getattr(task, "_coder_role_override", None)
-        use_think = getattr(task, "_think_override", None)
+        fresh_role = task._coder_role_override
+        use_think = task._think_override
         if self._config.cascade.test_first and task.test_files:
             tests_content = self._gather_tests(task)
             code_files = await self._coder.implement_with_tests(task, context, tests_content)
@@ -1247,11 +1247,11 @@ class Orchestrator:
         lesson_records: list[LessonRecord],
         attempt: int,
     ) -> None:
-        fix_role = getattr(task, "_coder_role_override", None)
+        fix_role = task._coder_role_override
         if fix_role and attempt >= 2:
             log.info("Routing fallback: switching from reasoning model to fast coder")
             fix_role = None
-        use_think = getattr(task, "_think_override", None)
+        use_think = task._think_override
 
         fm_context = await self._build_failure_memory_context(review)
 
@@ -1457,7 +1457,7 @@ class Orchestrator:
         from pmca.prompts.coder import TRIAGE_DIAGNOSE_PROMPT
 
         error_text = (
-            error.format_for_prompt() if hasattr(error, "format_for_prompt") else str(error)
+            error.format_for_prompt()
         )
         diagnose_prompt = TRIAGE_DIAGNOSE_PROMPT.format(
             spec=task.spec or "",

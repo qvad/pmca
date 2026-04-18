@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from pmca.models.config import AgentRole
 from pmca.tasks.state import (
     ReviewResult,
     TaskStatus,
@@ -33,6 +34,13 @@ class TaskNode:
     git_checkpoint: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
+
+    # Transient cascade state (set by orchestrator, not persisted)
+    _lint_issues: list[str] = field(default_factory=list, repr=False)
+    _missing_spec_names: list[str] = field(default_factory=list, repr=False)
+    _mutation_oracle_warning: str = field(default="", repr=False)
+    _coder_role_override: AgentRole | None = field(default=None, repr=False)
+    _think_override: bool | None = field(default=None, repr=False)
 
     def transition(self, new_status: TaskStatus) -> None:
         """Transition to a new status with validation."""
