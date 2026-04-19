@@ -49,4 +49,16 @@ PYTHON_MODERN_SKILLS = """
         if not data:
             return []
         # main logic here
+
+## Implementation Discipline:
+- NEVER leave placeholder comments like "# TODO: implement" or "# add logic here"
+- ALWAYS fully implement every function — no stubs, no pass statements in production code
+- Do EXACTLY what the spec asks — no more, no less. Don't rename, restructure, or "improve" beyond the request
+- Don't add demo/example code at the bottom of modules — if needed, put it under `if __name__ == "__main__":`
+
+## Test Quality:
+- Tests must verify ACTUAL BEHAVIOR, not just that functions exist
+- Each test should call the function with real inputs and assert real outputs
+- Make tests deterministic — use fixed dates, not datetime.now() in assertions
+- Test one behavior per test function
 """
