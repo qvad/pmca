@@ -44,7 +44,12 @@ class CoderAgent(BaseAgent):
             if GO_SKILLS not in system:
                 system += "\n" + GO_SKILLS
         else:
-            # Default Python skills for Qwen 3.5
+            # Python — inject modern Python skills for all models
+            from pmca.prompts.python_modern_skills import PYTHON_MODERN_SKILLS
+            if PYTHON_MODERN_SKILLS not in system:
+                system += "\n" + PYTHON_MODERN_SKILLS
+
+            # Additional Qwen-specific skills
             try:
                 model_cfg = self._model._config.get_model(role or self.role)
                 if model_cfg and "qwen3.5" in model_cfg.name.lower():
@@ -54,7 +59,7 @@ class CoderAgent(BaseAgent):
                     if prompts.THINKING_PROMPT_PREFIX not in system:
                         system += "\n" + prompts.THINKING_PROMPT_PREFIX
             except (AttributeError, KeyError):
-                pass  # Model config unavailable — skip skill injection
+                pass  # Model config unavailable — skip Qwen skill injection
 
         if self._project_mode:
             system += prompts.PROJECT_IMPORT_RULES
