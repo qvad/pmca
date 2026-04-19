@@ -41,6 +41,7 @@ cascade:
     5. Validate inputs at public API boundaries
     6. Raise ValueError for invalid arguments
     7. Full type annotations on all public methods
+    8. NEVER import list, dict, tuple, set from typing — use Python builtin types directly. Only import Callable, Any, Optional from typing if needed
 
 workspace:
   path: "./workspace"

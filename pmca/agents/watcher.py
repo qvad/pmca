@@ -550,6 +550,7 @@ class WatcherAgent(BaseAgent):
 
         if self._cascade.import_fixes:
             fixes += self._fix_package_imports_pass(ws)
+            fixes += self._fix_typing_builtins(task, ws)
         if self._cascade.ast_fixes:
             fixes += self._apply_ast_fixes_pass(task, ws)
 
@@ -559,6 +560,46 @@ class WatcherAgent(BaseAgent):
         if self._cascade.import_fixes:
             fixes += await self._fix_missing_imports_iteratively(task, ws)
 
+        return fixes
+
+    # Builtin type names that LLMs incorrectly import from typing.
+    # In Python 3.9+ these are builtins; in 3.14 typing no longer exports them.
+    _TYPING_BUILTINS = {"list", "dict", "tuple", "set", "frozenset", "type"}
+
+    def _fix_typing_builtins(self, task: TaskNode, ws: Path) -> int:
+        """Remove builtin type names from ``from typing import ...`` lines.
+
+        LLMs trained on pre-3.9 code generate ``from typing import list, dict``
+        which crashes on Python 3.14. This strips those names and removes the
+        import line entirely if nothing remains.
+        """
+        fixes = 0
+        for file_path, _ in self._iter_python_code_files(task, ws):
+            content = file_path.read_text()
+            new_lines: list[str] = []
+            changed = False
+            for line in content.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("from typing import "):
+                    names = [
+                        n.strip()
+                        for n in stripped[len("from typing import "):].split(",")
+                    ]
+                    kept = [n for n in names if n not in self._TYPING_BUILTINS]
+                    removed = [n for n in names if n in self._TYPING_BUILTINS]
+                    if removed:
+                        changed = True
+                        fixes += len(removed)
+                        if kept:
+                            new_lines.append(f"from typing import {', '.join(kept)}")
+                        # else: drop the entire import line
+                        continue
+                new_lines.append(line)
+            if changed:
+                file_path.write_text("\n".join(new_lines) + "\n")
+                self._log.info(
+                    f"Stripped {fixes} builtin type(s) from typing import in {file_path.name}"
+                )
         return fixes
 
     def _fix_package_imports_pass(self, ws: Path) -> int:

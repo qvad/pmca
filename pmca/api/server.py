@@ -218,13 +218,20 @@ def _make_finish_chunk(chunk_id: str, model: str, reason: str) -> str:
 
 
 def _build_tool_calls(orchestrator: Orchestrator) -> list[ToolCall]:
-    """Convert PMCA generated files (code + tests) into ``write`` tool_calls."""
+    """Convert PMCA generated files (code + tests) into ``write`` tool_calls.
+
+    Reads file content from disk (not from node snapshots) to include
+    any auto-fixes applied by the watcher after initial code generation.
+    """
+    ws = orchestrator._workspace_path
     all_files: dict[str, str] = {}
     for node in orchestrator.task_tree.walk():
-        for path, content in node.code_files.items():
-            all_files[path] = content
-        for path, content in node.test_files.items():
-            all_files[path] = content
+        for path in node.code_files:
+            disk_path = ws / path
+            all_files[path] = disk_path.read_text() if disk_path.exists() else node.code_files[path]
+        for path in node.test_files:
+            disk_path = ws / path
+            all_files[path] = disk_path.read_text() if disk_path.exists() else node.test_files[path]
 
     return [
         ToolCall(
