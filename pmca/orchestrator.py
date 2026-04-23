@@ -426,11 +426,15 @@ class Orchestrator:
         if think_mode:
             log.info(f"Task '{task.title}' flagged reasoning_heavy or profile_hint → triggering architect thinking")
 
-        # Generate spec
-        context = self._context_manager.build_context(task)
-        spec = await self._architect.generate_spec(task, context, think=think_mode)
-        task.spec = spec
-        log.info(f"Generated spec ({len(spec)} chars) for '{task.title}'")
+        # Skip architect if the prompt already IS a detailed spec
+        if self._is_detailed_spec(task.title):
+            task.spec = task.title
+            log.info(f"Prompt is a detailed spec ({len(task.title)} chars) — skipping architect")
+        else:
+            context = self._context_manager.build_context(task)
+            spec = await self._architect.generate_spec(task, context, think=think_mode)
+            task.spec = spec
+            log.info(f"Generated spec ({len(spec)} chars) for '{task.title}'")
 
         # Try to decompose
         subtasks = await self._architect.decompose(task, think=think_mode)
@@ -655,6 +659,20 @@ class Orchestrator:
         if interfaces:
             task.spec += "\n[INTERFACE]\n" + "\n".join(interfaces)
             log.info(f"Attached interface to '{task.title}'")
+
+    @staticmethod
+    def _is_detailed_spec(prompt: str) -> bool:
+        """True when the prompt already contains a structured implementation spec.
+
+        Heuristic: the prompt has spec-like markers (dataclass definitions,
+        method signatures, acceptance criteria) AND is long enough to be a
+        complete spec (>500 chars). When true, the architect is skipped and
+        the prompt is used as the spec directly.
+        """
+        if len(prompt) < 500:
+            return False
+        markers = ["@dataclass", "def ", "class ", "## ", "###", "->", "Returns:", "Acceptance"]
+        return sum(1 for m in markers if m in prompt) >= 3
 
     @staticmethod
     def _estimate_task_profile(task: TaskNode) -> tuple[str, bool, int]:
