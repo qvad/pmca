@@ -1,64 +1,52 @@
-"""Modern Python skills — runtime-version-aware coding conventions.
+"""Python coding skills — sourced from open-source skill repositories.
 
-Injected into all Python code generation prompts to prevent common
-LLM mistakes caused by training on pre-3.9/3.10 code.
+Sources:
+  - wshobson/agents: python-code-style, python-type-safety, python-error-handling
+  - wshobson/agents: python-design-patterns, python-project-structure
+  - obra/superpowers: systematic-debugging (fix context)
+
+Injected into coder system prompts for all Python tasks.
 """
 
+# Injected into every Python code generation call
 PYTHON_MODERN_SKILLS = """
-## Python Version Compatibility (CRITICAL — read before writing ANY code):
+## Python Code Style (source: wshobson/agents)
+- Use `ruff` conventions: snake_case for files/functions/variables, PascalCase for classes, SCREAMING_SNAKE_CASE for constants
+- Import order: stdlib → third-party → local. Use absolute imports only.
+- Line length: 120 characters max
+- Clarity over brevity in naming
 
-1. TYPE HINTS — use builtins, NOT typing module:
-   WRONG: from typing import List, Dict, Tuple, Set, Optional
-   RIGHT: use list, dict, tuple, set directly in annotations
-   RIGHT: from typing import Any, Callable  (these are still valid)
-   RIGHT: def foo(x: list[dict[str, int]]) -> list[str]:
-   RIGHT: def bar(x: str | None = None) -> dict:
-   WRONG: from typing import list  (lowercase list was NEVER in typing)
+## Type Safety (source: wshobson/agents)
+- Annotate ALL public function signatures with types
+- Use modern syntax: `list[str]` not `List[str]`, `dict[str, int]` not `Dict[str, int]`
+- Use `X | None` not `Optional[X]`, `int | str` not `Union[int, str]`
+- NEVER import list, dict, tuple, set, type from typing — they are builtins since Python 3.9
+- Only import from typing: Any, Callable, ClassVar, Final, Literal, Protocol, TypeVar, Generic
+- Use Protocols for structural typing instead of ABC when possible
 
-2. UNION TYPES — use | syntax, NOT Union/Optional:
-   WRONG: from typing import Union, Optional
-   WRONG: x: Optional[str] = None
-   RIGHT: x: str | None = None
-   RIGHT: x: int | float = 0
+## Error Handling (source: wshobson/agents)
+- Fail fast: validate inputs at public API boundaries BEFORE expensive operations
+- Use specific exceptions: ValueError for bad args, KeyError for missing keys, TypeError for wrong types
+- Include descriptive messages: `raise ValueError(f"priority must be 1-5, got {priority}")`
+- Preserve exception chains: `raise NewError(...) from original_error`
+- For batch processing: track successes and failures separately, don't abort on first error
 
-3. DATACLASSES — prefer over raw dicts for domain objects:
-   from dataclasses import dataclass, field
+## Design Patterns (source: wshobson/agents)
+- KISS: choose the simplest approach that works. No premature abstraction.
+- Single Responsibility: each class/function does ONE thing
+- Composition over inheritance: prefer has-a over is-a
+- Rule of Three: don't abstract until you see the pattern three times
+- Functions: max ~20 lines. If longer, extract helpers.
+- Use @dataclass for value objects, regular classes for behavior
 
-4. WALRUS OPERATOR — use for assignment in conditions:
-   if (n := len(items)) > 0:
+## Project Structure (source: wshobson/agents)
+- One concept per file: one class or a group of related functions
+- Flat directory structure: avoid deep nesting
+- Test files mirror source structure: src/models.py → tests/test_models.py
 
-5. MATCH STATEMENT — available for pattern matching:
-   match command:
-       case "quit": ...
-
-6. F-STRINGS — always use f-strings, never .format() or %:
-   RIGHT: f"Hello {name}"
-   WRONG: "Hello {}".format(name)
-
-7. PATHLIB — prefer over os.path:
-   from pathlib import Path
-   RIGHT: Path("dir") / "file.py"
-   WRONG: os.path.join("dir", "file.py")
-
-8. EXCEPTION GROUPS — use ExceptionGroup for multiple errors (3.11+)
-
-9. NO __future__ imports needed — annotations are native
-
-10. GUARD CLAUSE PATTERN:
-    def process(data):
-        if not data:
-            return []
-        # main logic here
-
-## Implementation Discipline:
-- NEVER leave placeholder comments like "# TODO: implement" or "# add logic here"
-- ALWAYS fully implement every function — no stubs, no pass statements in production code
-- Do EXACTLY what the spec asks — no more, no less. Don't rename, restructure, or "improve" beyond the request
-- Don't add demo/example code at the bottom of modules — if needed, put it under `if __name__ == "__main__":`
-
-## Test Quality:
-- Tests must verify ACTUAL BEHAVIOR, not just that functions exist
-- Each test should call the function with real inputs and assert real outputs
-- Make tests deterministic — use fixed dates, not datetime.now() in assertions
-- Test one behavior per test function
+## Implementation Discipline
+- NEVER leave placeholder stubs: no `pass`, no `# TODO`, no `...` in production code
+- ALWAYS fully implement every function
+- Do EXACTLY what the spec asks — no scope creep, no "improvements" beyond the request
+- Put demo/example code under `if __name__ == "__main__":` — never at module level
 """
