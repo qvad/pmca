@@ -196,6 +196,18 @@ class BaseAgent(ABC):
         if files:
             return self._normalize_filenames(files)
 
+        # Strategy 1b: Match blocks with "# filename.py" comment (Qwen 3.6 style)
+        pattern1b = r"```\w*\s*\n#\s*([a-zA-Z0-9_/.-]+\.py)\s*\n(.*?)```"
+        matches1b = re.findall(pattern1b, response, re.DOTALL)
+        for filepath, content in matches1b:
+            filepath = filepath.strip()
+            content = content.strip()
+            if content and filepath:
+                files.append(CodeFile(path=filepath, content=content))
+
+        if files:
+            return self._normalize_filenames(files)
+
         # Strategy 2: Look for filename in a heading or line before the code block
         pattern2 = r"(?:^|\n)(?:#+\s*|(?:\*\*)?`?)([a-zA-Z0-9_/.-]+\.[a-zA-Z]+)`?(?:\*\*)?\s*:?\s*\n```\w*\s*\n(.*?)```"
         matches2 = re.findall(pattern2, response, re.DOTALL)
