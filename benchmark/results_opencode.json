@@ -236,6 +236,17 @@
         "total": 11,
         "rate": 0.55,
         "issue": "Single unpacking bug breaks 4 tests; if fixed would be 10/11"
+      },
+      "qwen36_27b_spec_passthrough": {
+        "passed": 10,
+        "total": 10,
+        "rate": 1.0,
+        "model": "qwen3.6:27b (Q4_K_M, GPU+CPU split)",
+        "speed": "4.5 tok/s",
+        "time_s": 1314,
+        "lines": 341,
+        "complexity": "A (5.0)",
+        "issue": "None \u2014 all probes pass including subquery depth, assignment vs comparison, histogram buckets"
       }
     },
     "key_finding": "Spec quality matters more than skills. Architect bypass doubled pass rate. 4B model ceiling on complex regex parsing."
