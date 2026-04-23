@@ -1,72 +1,208 @@
 {
   "date": "2026-04-19",
-  "description": "OpenCode integration benchmark — raw models vs PMCA cascade",
+  "description": "OpenCode integration benchmark \u2014 raw models vs PMCA cascade",
   "environment": {
     "gpu": "RTX 4070 Ti Super 16GB",
     "python": "3.14.4",
     "ollama": "Docker on port 11435",
     "models": {
-      "gemma4_e4b": {"total_params": "8B", "effective_params": "4B MoE", "vram": "10.6GB"},
-      "qwen3.5_coder": {"total_params": "9B", "effective_params": "9B dense", "vram": "6.6GB"}
+      "gemma4_e4b": {
+        "total_params": "8B",
+        "effective_params": "4B MoE",
+        "vram": "10.6GB"
+      },
+      "qwen3.5_coder": {
+        "total_params": "9B",
+        "effective_params": "9B dense",
+        "vram": "6.6GB"
+      }
     }
   },
   "standard_benchmark": {
-    "tasks": ["calculator", "string_utils", "linked_list", "event_emitter", "matrix", "todo_manager"],
+    "tasks": [
+      "calculator",
+      "string_utils",
+      "linked_list",
+      "event_emitter",
+      "matrix",
+      "todo_manager"
+    ],
     "total_probes": 41,
     "results": {
-      "gemma4_raw": {"passed": 34, "total": 41, "rate": 0.829, "failures": {"matrix": "NameError: inline demo code runs on import without __main__ guard"}},
-      "qwen35_raw": {"passed": 41, "total": 41, "rate": 1.0},
-      "pmca_gemma4": {"passed": 41, "total": 41, "rate": 1.0, "notes": "cascade fixes matrix import crash"}
+      "gemma4_raw": {
+        "passed": 34,
+        "total": 41,
+        "rate": 0.829,
+        "failures": {
+          "matrix": "NameError: inline demo code runs on import without __main__ guard"
+        }
+      },
+      "qwen35_raw": {
+        "passed": 41,
+        "total": 41,
+        "rate": 1.0
+      },
+      "pmca_gemma4": {
+        "passed": 41,
+        "total": 41,
+        "rate": 1.0,
+        "notes": "cascade fixes matrix import crash"
+      }
     }
   },
   "complex_benchmark": {
     "tasks": [
-      {"name": "rest_client", "probes": 7, "description": "HTTP client with error hierarchy, retry on 5xx"},
-      {"name": "key_value_store", "probes": 10, "description": "Persistent JSON-backed KV store with dunders"},
-      {"name": "pipeline", "probes": 9, "description": "Chainable data transformations"},
-      {"name": "schema_validator", "probes": 7, "description": "Dict validation with type/range checks"}
+      {
+        "name": "rest_client",
+        "probes": 7,
+        "description": "HTTP client with error hierarchy, retry on 5xx"
+      },
+      {
+        "name": "key_value_store",
+        "probes": 10,
+        "description": "Persistent JSON-backed KV store with dunders"
+      },
+      {
+        "name": "pipeline",
+        "probes": 9,
+        "description": "Chainable data transformations"
+      },
+      {
+        "name": "schema_validator",
+        "probes": 7,
+        "description": "Dict validation with type/range checks"
+      }
     ],
     "total_probes": 33,
     "results": {
       "gemma4_raw": {
-        "rest_client": {"passed": 7, "total": 7},
-        "key_value_store": {"passed": 10, "total": 10},
-        "pipeline": {"passed": 0, "total": 9, "failure": "from typing import list — Python 3.14 incompatible"},
-        "schema_validator": {"passed": 5, "total": 7, "failure": "wrong_type and min_max logic errors"},
-        "total": {"passed": 22, "total": 33, "rate": 0.667}
+        "rest_client": {
+          "passed": 7,
+          "total": 7
+        },
+        "key_value_store": {
+          "passed": 10,
+          "total": 10
+        },
+        "pipeline": {
+          "passed": 0,
+          "total": 9,
+          "failure": "from typing import list \u2014 Python 3.14 incompatible"
+        },
+        "schema_validator": {
+          "passed": 5,
+          "total": 7,
+          "failure": "wrong_type and min_max logic errors"
+        },
+        "total": {
+          "passed": 22,
+          "total": 33,
+          "rate": 0.667
+        }
       },
       "qwen35_raw_nothink": {
-        "rest_client": {"passed": 7, "total": 7},
-        "key_value_store": {"passed": 1, "total": 8, "failure": "AttributeError: _data not defined"},
-        "pipeline": {"passed": 6, "total": 6},
-        "schema_validator": {"passed": 1, "total": 7, "failure": "Schema.__init__ requires positional args"},
-        "total": {"passed": 15, "total": 28, "rate": 0.536}
+        "rest_client": {
+          "passed": 7,
+          "total": 7
+        },
+        "key_value_store": {
+          "passed": 1,
+          "total": 8,
+          "failure": "AttributeError: _data not defined"
+        },
+        "pipeline": {
+          "passed": 6,
+          "total": 6
+        },
+        "schema_validator": {
+          "passed": 1,
+          "total": 7,
+          "failure": "Schema.__init__ requires positional args"
+        },
+        "total": {
+          "passed": 15,
+          "total": 28,
+          "rate": 0.536
+        }
       },
       "qwen35_raw_think": {
         "notes": "3 of 4 tasks timed out at 120s due to think mode generating 10K+ reasoning tokens",
-        "rest_client": {"passed": 0, "total": 7, "failure": "timeout"},
-        "key_value_store": {"passed": 0, "total": 10, "failure": "timeout"},
-        "pipeline": {"passed": 8, "total": 9},
-        "schema_validator": {"passed": 0, "total": 7, "failure": "timeout"},
-        "total": {"passed": 8, "total": 33, "rate": 0.242}
+        "rest_client": {
+          "passed": 0,
+          "total": 7,
+          "failure": "timeout"
+        },
+        "key_value_store": {
+          "passed": 0,
+          "total": 10,
+          "failure": "timeout"
+        },
+        "pipeline": {
+          "passed": 8,
+          "total": 9
+        },
+        "schema_validator": {
+          "passed": 0,
+          "total": 7,
+          "failure": "timeout"
+        },
+        "total": {
+          "passed": 8,
+          "total": 33,
+          "rate": 0.242
+        }
       },
       "pmca_gemma4_no_skills": {
-        "notes": "typing fix exists but tool_calls read from snapshot not disk — same as raw",
-        "total": {"passed": 22, "total": 33, "rate": 0.667}
+        "notes": "typing fix exists but tool_calls read from snapshot not disk \u2014 same as raw",
+        "total": {
+          "passed": 22,
+          "total": 33,
+          "rate": 0.667
+        }
       },
       "pmca_gemma4_with_skills": {
-        "rest_client": {"passed": 7, "total": 7},
-        "key_value_store": {"passed": 10, "total": 10},
-        "pipeline": {"passed": 8, "total": 9, "failure": "group_by API mismatch"},
-        "schema_validator": {"passed": 5, "total": 7, "failure": "wrong_type and min_max logic errors (same as raw)"},
-        "total": {"passed": 30, "total": 33, "rate": 0.909}
+        "rest_client": {
+          "passed": 7,
+          "total": 7
+        },
+        "key_value_store": {
+          "passed": 10,
+          "total": 10
+        },
+        "pipeline": {
+          "passed": 8,
+          "total": 9,
+          "failure": "group_by API mismatch"
+        },
+        "schema_validator": {
+          "passed": 5,
+          "total": 7,
+          "failure": "wrong_type and min_max logic errors (same as raw)"
+        },
+        "total": {
+          "passed": 30,
+          "total": 33,
+          "rate": 0.909
+        }
       }
     }
   },
   "combined": {
-    "gemma4_raw": {"passed": 56, "total": 74, "rate": 0.757},
-    "qwen35_raw_nothink": {"passed": 56, "total": 69, "rate": 0.812},
-    "pmca_gemma4_skills": {"passed": 71, "total": 74, "rate": 0.959}
+    "gemma4_raw": {
+      "passed": 56,
+      "total": 74,
+      "rate": 0.757
+    },
+    "qwen35_raw_nothink": {
+      "passed": 56,
+      "total": 69,
+      "rate": 0.812
+    },
+    "pmca_gemma4_skills": {
+      "passed": 71,
+      "total": 74,
+      "rate": 0.959
+    }
   },
   "key_findings": [
     "PMCA + skills lifts Gemma 4 from 76% to 96% (+20pp)",
@@ -75,6 +211,33 @@
     "_build_tool_calls must read from disk (not snapshots) to include auto-fixes",
     "Gemma 4 raw beats Qwen 3.5 raw on complex tasks (67% vs 54%)",
     "Qwen 3.5 think mode causes timeouts on complex prompts (3/4 tasks)",
-    "Remaining 3 failures are logic errors — need smarter model, not more architecture"
-  ]
+    "Remaining 3 failures are logic errors \u2014 need smarter model, not more architecture"
+  ],
+  "pyrqg_experiment": {
+    "task": "SQL query complexity analyzer (QueryStats, QueryProfile, StatsReport)",
+    "lines_generated": 524,
+    "classes": 3,
+    "description": "Regex-based SQL parsing with subquery depth, table counting, expression complexity, histogram bucketing",
+    "results": {
+      "architect_rewrites_spec": {
+        "passed": 4,
+        "total": 14,
+        "rate": 0.29,
+        "issue": "Architect lost spec precision (bucket boundaries, API)"
+      },
+      "exact_spec_passthrough": {
+        "passed": 7,
+        "total": 12,
+        "rate": 0.58,
+        "issue": "Regex edge cases (parentheses counting, assignment vs comparison)"
+      },
+      "exact_spec_opensource_skills": {
+        "passed": 6,
+        "total": 11,
+        "rate": 0.55,
+        "issue": "Single unpacking bug breaks 4 tests; if fixed would be 10/11"
+      }
+    },
+    "key_finding": "Spec quality matters more than skills. Architect bypass doubled pass rate. 4B model ceiling on complex regex parsing."
+  }
 }
