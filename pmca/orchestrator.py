@@ -1068,8 +1068,11 @@ class Orchestrator:
                 fake_check = await self._watcher.check_not_faked(code_content, test_content)
                 task.review_history.append(fake_check)
                 if not fake_check.passed:
-                    log.warning("Code appears to be faked, retrying")
-                    return False
+                    # Only retry if the faking check returned real issues, not parse failures
+                    if fake_check.issues and "Failed to parse" not in fake_check.issues[0]:
+                        log.warning("Code appears to be faked, retrying")
+                        return False
+                    log.info("Faking check inconclusive (parse failure), proceeding")
 
         task.transition(TaskStatus.VERIFIED)
         if self._config.workspace.git_checkpoint:

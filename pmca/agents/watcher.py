@@ -2512,7 +2512,33 @@ class WatcherAgent(BaseAgent):
         return self._parse_review(response)
 
     def _parse_review(self, response: str) -> ReviewResult:
-        """Parse review JSON from model response."""
+        """Parse review JSON from model response.
+
+        Handles MoE models that produce <think> blocks despite think=False,
+        and extracts the last valid JSON object (skipping any in think blocks).
+        """
+        # Extra sanitization — MoE models ignore think=False
+        response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
+        response = re.sub(r"</?think>", "", response)
+        response = response.split("<|endoftext|>")[0].strip()
+
+        # Find ALL JSON objects and use the last one with "passed" key
+        json_candidates = re.finditer(r"\{[^{}]*\}", response)
+        for match in reversed(list(json_candidates)):
+            try:
+                data = json.loads(match.group())
+                if "passed" in data:
+                    return ReviewResult(
+                        passed=bool(data.get("passed", False)),
+                        issues=data.get("issues", []),
+                        suggestions=data.get("suggestions", []),
+                        timestamp=datetime.now(),
+                        model_used=self.role.value,
+                    )
+            except json.JSONDecodeError:
+                continue
+
+        # Fallback: try greedy match for nested JSON
         json_match = re.search(r"\{.*\}", response, re.DOTALL)
         if json_match:
             try:
