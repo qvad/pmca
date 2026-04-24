@@ -257,3 +257,29 @@ Skills are injected into the coder's system prompt based on detected language. F
 ## License
 
 MIT
+
+### OpenClaude Setup
+
+[OpenClaude](https://github.com/Gitlawb/openclaude) — open-source Claude Code clone with Ollama support.
+
+```bash
+# Install
+git clone https://github.com/Gitlawb/openclaude.git
+cd openclaude && bun install && bun run build && npm link
+
+# Run with local model (27B+ recommended for tool calling)
+export CLAUDE_CODE_USE_OPENAI=1
+export OPENAI_API_KEY=dummy
+export OPENAI_BASE_URL=http://localhost:11434/v1
+openclaude --model qwen3.6:27b --dangerously-skip-permissions
+
+# Or via PMCA proxy (for smaller models that can't do tool calling)
+export OPENAI_BASE_URL=http://localhost:8222/v1
+openclaude --model pmca --dangerously-skip-permissions
+```
+
+**Model size requirements for direct tool calling (no PMCA proxy):**
+- Gemma 4 E4B (8B): too small — responds conversationally
+- Qwen 3.5 (9B): borderline — works in Crush, struggles in OpenClaude
+- **Qwen 3.6 27B: works** — generates code via tool calls
+- Models < 20B generally need PMCA proxy for agent tool calling
