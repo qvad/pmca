@@ -45,8 +45,29 @@ class BaseAgent(ABC):
 
         self._log.debug(f"Generating response (prompt length: {len(prompt)}, role={effective_role.value})")
         response = await self._model.generate(effective_role, prompt, system=system, temperature=temperature, think=think)
+        response = self._sanitize_response(response)
         self._log.debug(f"Got response (length: {len(response)})")
         return response
+
+    @staticmethod
+    def _sanitize_response(response: str) -> str:
+        """Strip think blocks, EOS tokens, and repeated content from model output.
+
+        MoE models with aggressive quantization (IQ3/Q2) produce artifacts:
+        <think>...</think> blocks, <|endoftext|> tokens, and sometimes
+        duplicate the response after EOS. This strips all of those.
+        """
+        # Strip <think>...</think> blocks (may contain reasoning)
+        response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
+        # Strip standalone <think> or </think> tags
+        response = re.sub(r"</?think>", "", response)
+        # Strip EOS/BOS tokens from various model families
+        response = re.sub(r"<\|(?:endoftext|im_start|im_end|end)\|>", "", response)
+        # Strip content after first EOS-like boundary (model repeats itself)
+        eos_pos = response.find("<|endoftext|>")
+        if eos_pos > 0:
+            response = response[:eos_pos]
+        return response.strip()
 
     async def _generate_structured(
         self, prompt: str, schema: dict, system: str = "", temperature: float | None = None,
