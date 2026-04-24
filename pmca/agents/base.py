@@ -61,12 +61,12 @@ class BaseAgent(ABC):
         response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
         # Strip standalone <think> or </think> tags
         response = re.sub(r"</?think>", "", response)
-        # Strip EOS/BOS tokens from various model families
-        response = re.sub(r"<\|(?:endoftext|im_start|im_end|end)\|>", "", response)
-        # Strip content after first EOS-like boundary (model repeats itself)
-        eos_pos = response.find("<|endoftext|>")
-        if eos_pos > 0:
-            response = response[:eos_pos]
+        # Cut at first EOS boundary (model repeats itself after EOS)
+        for eos in ("<|endoftext|>", "<|im_start|>", "<|im_end|>", "<|end|>"):
+            pos = response.find(eos)
+            if pos > 0:
+                response = response[:pos]
+                break
         return response.strip()
 
     async def _generate_structured(
