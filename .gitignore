@@ -29,3 +29,5 @@ results/
 
 # Obsidian
 Obsidian/
+node_modules/
+package*.json
