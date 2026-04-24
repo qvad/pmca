@@ -175,11 +175,84 @@ pip install -e ".[lint]"       # mypy, ruff
 pip install -e ".[rag]"        # chromadb, sentence-transformers
 ```
 
+## OpenCode / Crush Integration
+
+Use PMCA as a backend for [OpenCode](https://github.com/opencode-ai/opencode) or [Crush](https://github.com/charmbracelet/crush) — terminal coding agents similar to Claude Code. PMCA acts as an OpenAI-compatible proxy: the agent sends coding requests, PMCA runs the cascade, and returns verified code as `write` tool calls.
+
+```bash
+# 1. Start PMCA proxy (pick a config)
+OLLAMA_HOST=http://localhost:11434 pmca -c config/gemma4_32k.yaml serve --port 8222
+
+# 2. Configure OpenCode to use PMCA
+export LOCAL_ENDPOINT=http://localhost:8222/v1
+
+# 3. Run OpenCode normally — it doesn't know PMCA is behind it
+opencode
+```
+
+### Recommended Configs
+
+| Config | Model | Speed | Best For |
+|---|---|---|---|
+| `gemma4_32k.yaml` | Gemma 4 E4B (8B) | ~30 tok/s | Standard tasks (96% pass rate) |
+| `qwen36_8k.yaml` | Qwen 3.6 27B (GPU+CPU split) | ~4.5 tok/s | Complex tasks (100% pass rate) |
+| `gemma4_quality.yaml` | Gemma 4 + quality standards | ~30 tok/s | Production-quality code (Task classes, validation) |
+| `hybrid_gemma_qwen.yaml` | Gemma 4 architect + Qwen 3.5 coder | mixed | When Gemma 4 architect + Qwen implementation needed |
+
+### How the Proxy Works
+
+```
+OpenCode → PMCA API (:8222) → cascade (architect → coder → auto-fix → verify)
+                                                    ↓
+                             ← tool_calls [write(file1), write(file2)]
+```
+
+Four routing modes:
+1. **Tool result ack** — acknowledges tool execution, no cascade
+2. **Lightweight pass-through** — title/summarizer forwarded to Ollama directly
+3. **Agent mode** — coding requests run cascade, return streaming tool_calls
+4. **Direct mode** — no tools in request, returns markdown with code blocks
+
+## Language Support
+
+PMCA detects 20 programming languages and injects idiomatic coding skills:
+
+| Language | Skills | Test Runner |
+|---|---|---|
+| Python | Full (modern types, error handling, design patterns) | pytest |
+| Go | Idiomatic Go, error handling, concurrency | go test |
+| TypeScript | TS patterns, strict mode | jest |
+| Rust | Ownership, Result/Option, derive macros | cargo test |
+| Java | Records, Optional, SOLID, JUnit 5 | mvn test |
+| Kotlin | Data classes, null safety, coroutines | gradle test |
+| C# | Records, pattern matching, async/await | dotnet test |
+| C++ | Smart pointers, RAII, string_view | ctest |
+| Ruby | Duck typing, RSpec, blocks | rspec |
+| PHP | Strict types, enums, PHPUnit | phpunit |
+| Swift | Structs, protocols, guard clauses | XCTest |
+| Scala | Case classes, pattern matching | ScalaTest |
+| Elixir | Pattern matching, GenServer, pipes | ExUnit |
+| JavaScript, C, Lua, R, Dart, Shell, SQL | Detection + extension mapping | varies |
+
+### Skills Sources
+
+Coding skills are sourced from open-source repositories:
+
+| Source | Skills Used | License |
+|---|---|---|
+| [obra/superpowers](https://github.com/obra/superpowers) | systematic-debugging, verification-before-completion, code review | MIT |
+| [wshobson/agents](https://github.com/wshobson/agents) | python-testing-patterns, python-error-handling, python-design-patterns, python-type-safety, python-code-style | MIT |
+| [skills.sh](https://skills.sh/) | Agent Skills specification and registry | MIT |
+| [vercel-labs/skills](https://github.com/vercel-labs/skills) | Skills CLI and packaging format | MIT |
+
+Skills are injected into the coder's system prompt based on detected language. Fix skills are injected into retry prompts based on error patterns (regex, SQL, counting, assertion, import, dataclass).
+
 ## Blog Series
 
-- [Part 1: From 36% to 100%](https://medium.com/@12bytez) — Building the repair chain, testing 6 models
-- [Part 2: From 97% to Perfection](https://medium.com/@12bytez) — Qwen 3.5 thinking mode, killing the reviewer
-- [Part 3: Google's Smallest Gemma 4 Just Beat a 16B Model](https://medium.com/@12bytez) — Model-agnostic tuning, code quality audit
+- [Part 1: From 36% to 100%](https://x.com/12bytez/status/2034753653786255431) — Building the repair chain, testing 6 models
+- [Part 2: From 97% to Perfection](https://x.com/12bytez/status/2040288704435192031) — Qwen 3.5 thinking mode, killing the reviewer
+- [Part 3: Google's Smallest Gemma 4 Just Beat a 16B Model](https://x.com/12bytez/status/2044213963857244213) — Model-agnostic tuning, code quality audit
+- Part 4: The Model That Can't Use Tools Just Scored 96% — OpenCode integration, GPU+CPU split, Qwen 3.6 27B
 
 ## License
 

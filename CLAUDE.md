@@ -90,6 +90,32 @@ Pytest with `asyncio_mode = "auto"` (configured in `pyproject.toml`). No CI pipe
 
 All agents are mocked in unit tests via `pytest-mock` (`AsyncMock` for async methods). Common fixture pattern: create `Config` + `ModelManager` with `generate = AsyncMock()`, use `tempfile.TemporaryDirectory` for workspace.
 
+## OpenCode Integration
+
+PMCA serves as an OpenAI-compatible proxy for coding agents (OpenCode, Crush, aider):
+
+```bash
+# Start proxy with Gemma 4
+OLLAMA_HOST=http://localhost:11434 pmca -c config/gemma4_32k.yaml serve --port 8222
+
+# Point OpenCode at PMCA
+LOCAL_ENDPOINT=http://localhost:8222/v1 opencode
+```
+
+API server code: `pmca/api/server.py`. Four routing modes: tool result ack, lightweight pass-through, agent mode (streaming tool_calls), direct mode (markdown).
+
+## Language Support
+
+20 languages detected via `pmca/utils/lang.py`. Language-specific skills in:
+- `pmca/prompts/python_modern_skills.py` — Python (sourced from wshobson/agents, obra/superpowers)
+- `pmca/prompts/go_skills.py` — Go
+- `pmca/prompts/typescript_skills.py` — TypeScript
+- `pmca/prompts/language_skills.py` — Rust, Java, Kotlin, C#, C++, Ruby, PHP, Swift, Scala, Elixir
+
+Fix skills (`pmca/prompts/fix_skills.py`) inject domain-specific repair hints based on error patterns:
+- systematic-debugging (sourced from obra/superpowers)
+- regex, SQL assignment, counting, assertion, import, dataclass rules
+
 ## Conventions
 
 - All LLM and I/O operations are async (`async def`, `await`)
@@ -97,3 +123,4 @@ All agents are mocked in unit tests via `pytest-mock` (`AsyncMock` for async met
 - Config is loaded into dataclasses (`pmca/models/config.py`) from YAML
 - Generated code and benchmark artifacts go to `workspace/` (gitignored)
 - MCP server uses `asyncio.Lock` to serialize tool calls (orchestrator not thread-safe)
+- Skills are sourced from open-source repos (obra/superpowers, wshobson/agents) — credited in docstrings
