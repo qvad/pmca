@@ -38,6 +38,7 @@ cascade:
   reviewer_bypass_on_pass: true
   use_llm_reviewer: false
   spec_literals: true
+  skip_architect: true           # MoE at IQ3 needs detailed specs — architect rewrites degrade quality
   quality_standards: |
     1. Use EXACT filenames from the user request
     2. Use @dataclass for data containers

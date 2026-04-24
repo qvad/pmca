@@ -57,6 +57,7 @@ class CascadeConfig:
     spec_literals: bool = True      # Extract string literals from spec before coding
     test_triage: bool = True        # Per-failure investigation cascade (diagnose → fix → verify)
     quality_standards: str = ""     # Injected into architect spec for production-quality output
+    skip_architect: bool = False    # Skip architect — use prompt as spec directly
 
 
 @dataclass
@@ -150,6 +151,8 @@ class Config:
             lesson_injection=cascade_raw.get("lesson_injection", True),
             spec_literals=cascade_raw.get("spec_literals", True),
             test_triage=cascade_raw.get("test_triage", True),
+            quality_standards=cascade_raw.get("quality_standards", ""),
+            skip_architect=cascade_raw.get("skip_architect", False),
         )
 
         ws_raw = raw.get("workspace", {})

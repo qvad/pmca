@@ -426,10 +426,10 @@ class Orchestrator:
         if think_mode:
             log.info(f"Task '{task.title}' flagged reasoning_heavy or profile_hint → triggering architect thinking")
 
-        # Skip architect if the prompt already IS a detailed spec
-        if self._is_detailed_spec(task.title):
+        # Skip architect when: detailed spec provided, or config says skip
+        if self._config.cascade.skip_architect or self._is_detailed_spec(task.title):
             task.spec = task.title
-            log.info(f"Prompt is a detailed spec ({len(task.title)} chars) — skipping architect")
+            log.info(f"Using prompt as spec directly ({len(task.title)} chars) — architect skipped")
         else:
             context = self._context_manager.build_context(task)
             spec = await self._architect.generate_spec(task, context, think=think_mode)
