@@ -43,7 +43,7 @@ class CoderAgent(BaseAgent):
             from pmca.prompts import GO_SKILLS
             if GO_SKILLS not in system:
                 system += "\n" + GO_SKILLS
-        else:
+        elif lang == "python":
             # Python — inject modern Python skills for all models
             from pmca.prompts.python_modern_skills import PYTHON_MODERN_SKILLS
             if PYTHON_MODERN_SKILLS not in system:
@@ -60,6 +60,12 @@ class CoderAgent(BaseAgent):
                         system += "\n" + prompts.THINKING_PROMPT_PREFIX
             except (AttributeError, KeyError):
                 pass  # Model config unavailable — skip Qwen skill injection
+        else:
+            # All other languages — inject from language_skills registry
+            from pmca.prompts.language_skills import get_language_skills
+            skills = get_language_skills(lang)
+            if skills and skills not in system:
+                system += "\n" + skills
 
         if self._project_mode:
             system += prompts.PROJECT_IMPORT_RULES
@@ -324,6 +330,13 @@ class CoderAgent(BaseAgent):
                 issues=issues_str,
                 spec=task.spec,
             )
+
+        # Inject domain-specific fix skills based on error patterns
+        from pmca.prompts.fix_skills import get_fix_skills
+        fix_skills = get_fix_skills(issues_str, code_blocks_str)
+        if fix_skills:
+            prompt += fix_skills
+            self._log.info(f"Injected fix skills ({len(fix_skills)} chars)")
 
         # Prepend dedup warning if duplicate detected
         if is_duplicate:
